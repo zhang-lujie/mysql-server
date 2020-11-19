@@ -6,6 +6,7 @@
 
 # Make sure the locks keep waiting until they are released,
 # even on a busy system.
+
 SET GLOBAL innodb_lock_wait_timeout=600;
 
 DESCRIBE INFORMATION_SCHEMA.INNODB_TRX;
