@@ -49,6 +49,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "srv0srv.h"
 #include "srv0start.h"
 #include "trx0purge.h"
+#include "trx0roll.h"
+#include "clone0clone.h"
 #include "trx0rseg.h"
 #include "trx0trx.h"
 #include "trx0undo.h"
@@ -67,7 +69,7 @@ void ReadView::check_trx_id_sanity(trx_id_t id, const table_name_t &name) {
     return;
   }
 
-  if (id >= trx_sys->max_trx_id) {
+  if (id >= trx_sys->get_max_trx_id()) {
     ib::warn(ER_IB_MSG_1196)
         << "A transaction id"
         << " in a record of table " << name << " is newer than the"
@@ -99,14 +101,12 @@ void trx_sys_flush_max_trx_id(void) {
   mtr_t mtr;
   trx_sysf_t *sys_header;
 
-  ut_ad(trx_sys_mutex_own());
-
   if (!srv_read_only_mode) {
     mtr_start(&mtr);
 
     sys_header = trx_sysf_get(&mtr);
 
-    mlog_write_ull(sys_header + TRX_SYS_TRX_ID_STORE, trx_sys->max_trx_id,
+    mlog_write_ull(sys_header + TRX_SYS_TRX_ID_STORE, trx_sys->get_max_trx_id(),
                    &mtr);
 
     mtr_commit(&mtr);
@@ -125,31 +125,35 @@ void trx_sys_persist_gtid_num(trx_id_t gtid_trx_no) {
 }
 
 trx_id_t trx_sys_oldest_trx_no() {
-  ut_ad(trx_sys_mutex_own());
   /* Get the oldest transaction from serialisation list. */
-  if (UT_LIST_GET_LEN(trx_sys->serialisation_list) > 0) {
-    auto trx = UT_LIST_GET_FIRST(trx_sys->serialisation_list);
-    return (trx->no);
+  trx_id_t max_trx_id = TRX_ID_MAX;
+  for (auto trx = UT_LIST_GET_FIRST(trx_sys->trx_list); trx != nullptr;
+    trx = UT_LIST_GET_NEXT(trx_list, trx)) {
+      if (trx->serialised && trx->no < max_trx_id) {
+          max_trx_id = trx->no;
+      }
   }
-  return (trx_sys->max_trx_id);
+  return max_trx_id != TRX_ID_MAX ? max_trx_id : trx_sys->get_max_trx_id();
 }
 
 void trx_sys_get_binlog_prepared(std::vector<trx_id_t> &trx_ids) {
-  trx_sys_mutex_enter();
+  mutex_enter(&trx_sys->mutex);
   /* Exit fast if no prepared transaction. */
-  if (trx_sys->n_prepared_trx == 0) {
-    trx_sys_mutex_exit();
+  if (!trx_sys->n_prepared_trx()) {
+    mutex_exit(&trx_sys->mutex);
     return;
   }
   /* Check and find binary log prepared transaction. */
-  for (auto trx = UT_LIST_GET_FIRST(trx_sys->rw_trx_list); trx != nullptr;
+  for (auto trx = UT_LIST_GET_FIRST(trx_sys->trx_list); trx != nullptr;
        trx = UT_LIST_GET_NEXT(trx_list, trx)) {
-    assert_trx_in_rw_list(trx);
+    if (trx->state != TRX_STATE_ACTIVE && trx->state != TRX_STATE_PREPARED) {
+        continue;
+    }
     if (trx_state_eq(trx, TRX_STATE_PREPARED) && trx_is_mysql_xa(trx)) {
       trx_ids.push_back(trx->id);
     }
   }
-  trx_sys_mutex_exit();
+  mutex_exit(&trx_sys->mutex);
 }
 
 /** Read binary log positions from buffer passed.
@@ -440,10 +444,11 @@ purge_pq_t *trx_sys_init_at_db_start(void) {
 
   sys_header = trx_sysf_get(&mtr);
 
-  trx_sys->max_trx_id =
+  trx_id_t max_trx_id =
       2 * TRX_SYS_TRX_ID_WRITE_MARGIN +
       ut_uint64_align_up(mach_read_from_8(sys_header + TRX_SYS_TRX_ID_STORE),
                          TRX_SYS_TRX_ID_WRITE_MARGIN);
+    trx_sys->init_max_trx_id(max_trx_id);
 
   mtr.commit();
 
@@ -451,7 +456,7 @@ purge_pq_t *trx_sys_init_at_db_start(void) {
   /* max_trx_id is the next transaction ID to assign. Initialize maximum
   transaction number to one less if all transactions are already purged. */
   if (trx_sys->rw_max_trx_no == 0) {
-    trx_sys->rw_max_trx_no = trx_sys->max_trx_id - 1;
+    trx_sys->rw_max_trx_no = trx_sys->get_max_trx_id() - 1;
   }
 #endif /* UNIV_DEBUG */
 
@@ -463,15 +468,20 @@ purge_pq_t *trx_sys_init_at_db_start(void) {
   the debug code (assertions). We are still running in single threaded
   bootstrap mode. */
 
-  trx_sys_mutex_enter();
+  mutex_enter(&trx_sys->mutex);
 
-  if (UT_LIST_GET_LEN(trx_sys->rw_trx_list) > 0) {
+  if (UT_LIST_GET_LEN(trx_sys->trx_list) > 0) {
     const trx_t *trx;
 
-    for (trx = UT_LIST_GET_FIRST(trx_sys->rw_trx_list); trx != nullptr;
+    for (trx = UT_LIST_GET_FIRST(trx_sys->trx_list); trx != nullptr;
          trx = UT_LIST_GET_NEXT(trx_list, trx)) {
+      if (trx->state != TRX_STATE_ACTIVE && trx->state != TRX_STATE_PREPARED) {
+        /* trx_dummy_sess is a transaction in TRX_STATE_NOT_STARTED state. */
+        continue;
+      }
       ut_ad(trx->is_recovered);
-      assert_trx_in_rw_list(trx);
+      ut_ad(trx->rsegs.m_redo.rseg->trx_ref_count > 0);
+      ut_ad(trx_sys->find(nullptr, trx->id, false) != nullptr);
 
       if (trx_state_eq(trx, TRX_STATE_ACTIVE)) {
         rows_to_undo += trx->undo_no;
@@ -484,49 +494,344 @@ purge_pq_t *trx_sys_init_at_db_start(void) {
     }
 
     ib::info(ER_IB_MSG_1198)
-        << UT_LIST_GET_LEN(trx_sys->rw_trx_list)
+        << UT_LIST_GET_LEN(trx_sys->trx_list)
         << " transaction(s) which must be rolled back or"
            " cleaned up in total "
         << rows_to_undo << unit << " row operations to undo";
 
-    ib::info(ER_IB_MSG_1199) << "Trx id counter is " << trx_sys->max_trx_id;
+    ib::info(ER_IB_MSG_1199)
+        << "Trx id counter is " << trx_sys->get_max_trx_id();
   }
 
-  trx_sys->found_prepared_trx = trx_sys->n_prepared_trx > 0;
+  trx_sys->found_prepared_trx = trx_sys->n_prepared_trx() > 0;
 
-  trx_sys_mutex_exit();
+  mutex_exit(&trx_sys->mutex);
 
   return (purge_queue);
 }
 
+/** Constructor callback for lock-free allocator.
+
+Object is just allocated and is not yet accessible via rw_trx_hash by
+concurrent threads. Object can be reused multiple times before it is freed.
+Every time object is being reused initialize() callback is called. */
+void rw_trx_hash_t::rw_trx_hash_constructor(uchar *arg) {
+  new (arg + LF_HASH_OVERHEAD) rw_trx_hash_element_t();
+}
+
+/** Destructor callback for lock-free allocator.
+
+Object is about to be freed and is not accessible via rw_trx_hash by
+concurrent threads. */
+void rw_trx_hash_t::rw_trx_hash_destructor(uchar *arg) {
+  reinterpret_cast<rw_trx_hash_element_t *>(arg + LF_HASH_OVERHEAD)
+      ->~rw_trx_hash_element_t();
+}
+
+/** Destructor callback for lock-free allocator.
+
+This destructor is used at shutdown. It frees remaining transaction objects.
+
+XA PREPARED transactions may remain if they haven't been committed or rolled
+back. ACTIVE transactions may remain if startup was interrupted or server is
+running in read-only mode or for certain srv_force_recovery levels. */
+void rw_trx_hash_t::rw_trx_hash_shutdown_destructor(uchar *arg) {
+  auto element =
+      reinterpret_cast<rw_trx_hash_element_t *>(arg + LF_HASH_OVERHEAD);
+  trx_t *trx = element->trx;
+  if (trx != nullptr) {
+    ut_ad(trx_state_eq(trx, TRX_STATE_PREPARED) ||
+          (trx_state_eq(trx, TRX_STATE_ACTIVE) &&
+           (srv_is_being_started || srv_read_only_mode ||
+            (srv_force_recovery >= SRV_FORCE_NO_TRX_UNDO))));
+    trx_free_at_shutdown(trx);
+  }
+  element->~rw_trx_hash_element_t();
+}
+
+/** Initializer callback for lock-free hash.
+
+Object is not yet accessible via rw_trx_hash by concurrent threads, but is
+about to become such. Object id can be changed only by this callback and
+remains the same until all pins to this object are released.
+
+Object trx can be changed to 0 by erase() under object mutex protection,
+which indicates it is about to be removed from lock-free hash and become not
+accessible by concurrent threads. */
+void rw_trx_hash_t::rw_trx_hash_initialize(rw_trx_hash_element_t *element,
+                                           trx_t *trx) {
+  ut_ad(element->trx == nullptr);
+  element->trx = trx;
+  element->id = trx->id;
+  element->no = TRX_ID_MAX;
+  trx->rw_trx_hash_element = element;
+}
+
+/** Gets LF_HASH pins.
+
+Pins are used to protect object from being destroyed or reused. They are
+normally stored in trx object for quick access. If caller doesn't have trx
+available, we try to get it using current_trx(). If caller doesn't have trx at
+all, temporary pins are allocated. */
+LF_PINS *rw_trx_hash_t::get_pins(trx_t *trx) {
+  if (trx->rw_trx_hash_pins == nullptr) {
+    trx->rw_trx_hash_pins = lf_hash_get_pins(&hash);
+    ut_a(trx->rw_trx_hash_pins != nullptr);
+  }
+
+  return trx->rw_trx_hash_pins;
+}
+
+bool rw_trx_hash_t::eliminate_duplicates(rw_trx_hash_element_t *element,
+                                         eliminate_duplicates_arg *arg) {
+  for (auto id : arg->ids) {
+    if (id == element->id) {
+      return false;
+    }
+  }
+
+  arg->ids.push_back(element->id);
+  return arg->action(element, arg->argument);
+}
+
+#ifdef UNIV_DEBUG
+void rw_trx_hash_t::validate_element(trx_t *trx) {
+  ut_ad(!trx->read_only || trx->rsegs.m_redo.rseg == nullptr);
+  ut_ad(!trx_is_autocommit_non_locking(trx));
+  mutex_enter(&trx->mutex);
+  ut_ad(trx_state_eq(trx, TRX_STATE_ACTIVE) ||
+        trx_state_eq(trx, TRX_STATE_PREPARED));
+  mutex_exit(&trx->mutex);
+}
+
+bool rw_trx_hash_t::debug_iterator(rw_trx_hash_element_t *element,
+                                   debug_iterator_arg *arg) {
+  mutex_enter(&element->mutex);
+  if (element->trx != nullptr) {
+    validate_element(element->trx);
+  }
+  mutex_exit(&element->mutex);
+  return arg->action(element, arg->argument);
+}
+#endif /* UNIV_DEBUG */
+
+void rw_trx_hash_t::init() {
+  lf_hash_init(&hash, sizeof(rw_trx_hash_element_t), LF_HASH_UNIQUE, 0,
+               sizeof(trx_id_t), nullptr, &my_charset_bin);
+  hash.alloc.constructor = rw_trx_hash_constructor;
+  hash.alloc.destructor = rw_trx_hash_destructor;
+  hash.initialize =
+      reinterpret_cast<lf_hash_init_func *>(rw_trx_hash_initialize);
+}
+
+void rw_trx_hash_t::destroy() {
+  hash.alloc.destructor = rw_trx_hash_shutdown_destructor;
+  lf_hash_destroy(&hash);
+}
+
+/** Releases LF_HASH pins.
+
+Must be called by thread that owns trx_t object when the later is being
+"detached" from thread (e.g. released to the pool by trx_free()). Can be
+called earlier if thread is expected not to use rw_trx_hash.
+
+Since pins are not allowed to be transferred to another thread,
+initialisation thread calls this for recovered transactions. */
+void rw_trx_hash_t::put_pins(trx_t *trx) {
+  if (trx->rw_trx_hash_pins != nullptr) {
+    lf_hash_put_pins(trx->rw_trx_hash_pins);
+    trx->rw_trx_hash_pins = nullptr;
+  }
+}
+
+/** Finds trx object in lock-free hash with given id.
+
+Only ACTIVE or PREPARED trx objects may participate in hash. Nevertheless the
+transaction may get committed before this method returns.
+
+With do_ref_count == false the caller may dereference returned trx pointer
+only if lock_sys.mutex was acquired before calling find().
+
+With do_ref_count == true caller dereferemce trx even if it is not holding
+lock_sys.mutex. Caller is responsible for calling trx->release_reference()
+when it is done playing with trx.
+
+Ideally this method should get caller rw_trx_hash_pins along with trx object
+as a parameter, similar to insert() and erase(). However most callers lose trx
+early in their call chains and it is not that easy to pass them through.
+
+So we take more expensive approach: get trx through current_thd()->ha_data.
+Some threads don't have trx attached to THD, and at least server
+initialisation thread, fts_optimize_thread, srv_master_thread,
+dict_stats_thread, srv_monitor_thread, btr_defragment_thread don't even have
+THD at all. For such cases we allocate pins only for duration of search and
+free them immediately.
+
+This has negative performance impact and should be fixed eventually (by
+passing caller_trx as a parameter). Still stream of DML is more or less Ok.
+
+@return pointer to trx or nullptr if not found */
+trx_t *rw_trx_hash_t::find(trx_t *caller_trx, trx_id_t trx_id,
+                           bool do_ref_count) {
+  /* In Taurus, purge will reset DB_TRX_ID to 0 when the histroy is lost.
+  Read/Write transactions will always have a nonzero trx_t::id; there the
+  value 0 is reserved for transactions that did not write or lock anything
+  yet.
+
+  The caller should already have handled trx_id==0 specially. */
+  ut_ad(trx_id > 0);
+  if (caller_trx != nullptr && caller_trx->id == trx_id) {
+    if (do_ref_count) {
+      caller_trx->reference();
+    }
+    return caller_trx;
+  }
+
+  trx_t *trx = nullptr;
+  LF_PINS *pins =
+      (caller_trx != nullptr) ? get_pins(caller_trx) : lf_hash_get_pins(&hash);
+  ut_a(pins != nullptr);
+
+  rw_trx_hash_element_t *element = reinterpret_cast<rw_trx_hash_element_t *>(
+      lf_hash_search(&hash, pins, reinterpret_cast<const void *>(&trx_id),
+                     sizeof(trx_id_t)));
+  if (element != nullptr) {
+    mutex_enter(&element->mutex);
+    lf_hash_search_unpin(pins);
+    trx = element->trx;
+    if (trx == nullptr) {
+    } else if (UNIV_UNLIKELY(trx_id != trx->id)) {
+      trx = nullptr;
+    } else {
+      if (do_ref_count) {
+        trx->reference();
+      }
+      ut_d(validate_element(trx));
+    }
+    mutex_exit(&element->mutex);
+  } else {
+    lf_hash_search_unpin(pins);
+  }
+  if (caller_trx == nullptr) {
+    lf_hash_put_pins(pins);
+  }
+  return trx;
+}
+
+/** Inserts trx to lock-free hash.
+
+Object becomes accessible via rw_trx_hash. */
+void rw_trx_hash_t::insert(trx_t *trx) {
+  ut_d(validate_element(trx));
+  int res = lf_hash_insert(&hash, get_pins(trx), static_cast<void *>(trx));
+  ut_a(res == 0);
+}
+
+/** Removes trx from lock-free hash.
+
+Object becomes not accessible via rw_trx_hash. But it still can be pinned by
+concurrent find(), which is supposed to release it immediately after it sees
+object trx is nullptr. */
+void rw_trx_hash_t::erase(trx_t *trx) {
+  ut_d(validate_element(trx));
+  mutex_enter(&trx->rw_trx_hash_element->mutex);
+  trx->rw_trx_hash_element->trx = nullptr;
+  mutex_exit(&trx->rw_trx_hash_element->mutex);
+  int res =
+      lf_hash_delete(&hash, get_pins(trx), static_cast<const void *>(&trx->id),
+                     sizeof(trx_id_t));
+  ut_a(res == 0);
+}
+
+/** Returns the number of elements in the hash.
+
+The number is exact only if hash is protected against concurrent modifications
+(e.g., single threaded startup or hash is protected by some mutex). Otherwise
+the number maybe used as a hint only, because it may change even before this
+method returns. */
+uint32_t rw_trx_hash_t::size() {
+  return static_cast<uint32_t>(hash.count.load(std::memory_order_relaxed));
+}
+
+/** Iterates the hash.
+
+@param caller_trx used to get/set pins
+@param action     called for every element in hash
+@param argument   opque argument passed to action
+
+May return the same element multiple times if hash is under contention. If
+caller doesn't like to see the same transaction multiple times, it has to call
+iterate_no_dups() instead.
+
+May return element with committed transaction. If caller doesn't like to see
+committed transactions, it has to skip those under element mutex:
+
+  mutex_enter(&element->mutex);
+  trx_t *trx = element->trx;
+  if (trx != nullptr) {
+    // trx is protected against commit in this branch
+  }
+  mutex_exit(&element->mutex);
+
+May miss concurrently inserted transactions.
+
+@return 0 if iteration completed successfuly, or 1 if iteration was
+interrupted (action returned true) */
+int rw_trx_hash_t::iterate(trx_t *caller_trx, const lf_hash_walk_func *action,
+                           const void *argument) {
+  LF_PINS *pins =
+      (caller_trx != nullptr) ? get_pins(caller_trx) : lf_hash_get_pins(&hash);
+  ut_a(pins != nullptr);
+#ifdef UNIV_DEBUG
+  debug_iterator_arg debug_arg = {action, const_cast<void *>(argument)};
+  action = reinterpret_cast<lf_hash_walk_func *>(debug_iterator);
+  argument = &debug_arg;
+#endif /* UNIV_DEBUG */
+  int res = lf_hash_iterate(&hash, pins, action, argument);
+  if (caller_trx == nullptr) {
+    lf_hash_put_pins(pins);
+  }
+  return res;
+}
+
+int rw_trx_hash_t::iterate(const lf_hash_walk_func *action, const void *argument) {
+  return iterate(current_trx(), action, argument);
+}
+
+/** Iterates the hash and eliminates duplicate elements.
+
+@sa iterate() */
+int rw_trx_hash_t::iterate_no_dups(trx_t *caller_trx, lf_hash_walk_func *action,
+                                   void *argument) {
+  eliminate_duplicates_arg arg(size() + 32, action, argument);
+  return iterate(caller_trx,
+                 reinterpret_cast<lf_hash_walk_func *>(eliminate_duplicates),
+                 &arg);
+}
+
+int rw_trx_hash_t::iterate_no_dups(lf_hash_walk_func *action, void *argument) {
+  return iterate_no_dups(current_trx(), action, argument);
+}
+
 /** Creates the trx_sys instance and initializes purge_queue and mutex. */
-void trx_sys_create(void) {
+void trx_sys_create() {
   ut_ad(trx_sys == nullptr);
 
   trx_sys = static_cast<trx_sys_t *>(ut_zalloc_nokey(sizeof(*trx_sys)));
 
   mutex_create(LATCH_ID_TRX_SYS, &trx_sys->mutex);
 
-  UT_LIST_INIT(trx_sys->serialisation_list, &trx_t::no_list);
-  UT_LIST_INIT(trx_sys->rw_trx_list, &trx_t::trx_list);
-  UT_LIST_INIT(trx_sys->mysql_trx_list, &trx_t::mysql_trx_list);
-
-  trx_sys->mvcc = UT_NEW_NOKEY(MVCC(1024));
-
-  trx_sys->min_active_id = 0;
+  UT_LIST_INIT(trx_sys->trx_list, &trx_t::trx_list);
 
   ut_d(trx_sys->rw_max_trx_no = 0);
-
-  new (&trx_sys->rw_trx_ids)
-      trx_ids_t(ut_allocator<trx_id_t>(mem_key_trx_sys_t_rw_trx_ids));
-
-  new (&trx_sys->rw_trx_set) TrxIdSet();
 
   new (&trx_sys->rsegs) Rsegs();
   trx_sys->rsegs.set_empty();
 
   new (&trx_sys->tmp_rsegs) Rsegs();
   trx_sys->tmp_rsegs.set_empty();
+
+  trx_sys->rw_trx_hash.init();
 }
 
 /** Creates and initializes the transaction system at the database creation. */
@@ -540,16 +845,117 @@ void trx_sys_create_sys_pages(void) {
   mtr_commit(&mtr);
 }
 
+/** @return total number of active (non-prepared) transactions. */
+ulint trx_sys_t::any_active_transactions() {
+  ulint total_trx = 0;
+
+  mutex_enter(&mutex);
+  for (trx_t *trx = UT_LIST_GET_FIRST(trx_list); trx != nullptr;
+       trx = UT_LIST_GET_NEXT(trx_list, trx)) {
+    if (trx->state == TRX_STATE_COMMITTED_IN_MEMORY ||
+        (trx->state == TRX_STATE_ACTIVE && trx->id > 0)) {
+      total_trx++;
+    }
+
+    if (srv_force_recovery >= SRV_FORCE_NO_TRX_UNDO) {
+      if (trx->state == TRX_STATE_ACTIVE && trx->is_recovered) {
+        total_trx--;
+      }
+    }
+  }
+  mutex_exit(&mutex);
+  return total_trx;
+}
+
+/** Clones the oldest view and stores it in view.
+
+No need to call ReadView::close(). The caller owns the view that is passed in.
+This function is called by purge thread to determine whether it should purge the
+delete marked record or not. */
+void trx_sys_t::clone_oldest_view(ReadView *view) {
+  if (view == NULL) {
+      purge_sys->view.snapshot(nullptr);
+  }
+  mutex_enter(&mutex);
+  /* Find oldest view. */
+  for (const trx_t *trx = UT_LIST_GET_FIRST(trx_list); trx != nullptr;
+       trx = UT_LIST_GET_NEXT(trx_list, trx)) {
+    int32_t state;
+    while ((state = trx->read_view.get_state()) == READ_VIEW_STATE_SNAPSHOT) {
+      ut_delay(1);
+    }
+
+    if (state == READ_VIEW_STATE_OPEN) {
+      if (view == NULL) {
+          purge_sys->view.copy(trx->read_view);
+      } else {
+          view->copy(trx->read_view);
+      }
+    }
+  }
+  mutex_exit(&mutex);
+  /* Update view to block purging transaction till GTID is persisted. */
+  auto &gtid_persistor = clone_sys->get_gtid_persistor();
+  auto gtid_oldest_trxno = gtid_persistor.get_oldest_trx_no();
+  purge_sys->view.reduce_low_limit(gtid_oldest_trxno);
+}
+
+struct trx_sys_found_prepared_trx_callback_arg {
+  uint count;
+};
+
+static bool trx_sys_found_prepared_trx_callback(
+    rw_trx_hash_element_t *element,
+    trx_sys_found_prepared_trx_callback_arg *arg) {
+  mutex_enter(&element->mutex);
+  trx_t *trx = element->trx;
+  if (trx != nullptr) {
+    if (trx_state_eq(trx, TRX_STATE_PREPARED)) {
+      arg->count++;
+    }
+  }
+  mutex_exit(&element->mutex);
+  return false;
+}
+
+/** @return true if found prepared transaction(s). */
+ulint trx_sys_t::n_prepared_trx() {
+  trx_sys_found_prepared_trx_callback_arg arg = {0};
+
+  trx_sys->rw_trx_hash.iterate(reinterpret_cast<lf_hash_walk_func *>(
+                                   trx_sys_found_prepared_trx_callback),
+                               &arg);
+
+  return arg.count;
+}
+
+trx_id_t trx_sys_t::get_new_trx_id_no_refresh() {
+  /* TODO wcy: why is this function called when doing undo? */
+
+  /* VERY important: after the database is started, max_trx_id value is
+  divisible by TRX_SYS_TRX_ID_WRITE_MARGIN, and the following if
+  will evaluate to TRUE when this function is first time called,
+  and the value for trx id will be written to disk-based header!
+  Thus trx id values will not overlap when the database is
+  repeatedly started! */
+
+  if (get_max_trx_id() % TRX_SYS_TRX_ID_WRITE_MARGIN == 0) {
+    trx_sys_flush_max_trx_id();
+  }
+
+  return max_trx_id.fetch_add(1, std::memory_order_relaxed);
+}
+
 /*********************************************************************
 Shutdown/Close the transaction system. */
-void trx_sys_close(void) {
-  ut_ad(srv_shutdown_state.load() == SRV_SHUTDOWN_EXIT_THREADS);
+void trx_sys_close() {
+  ut_ad(srv_shutdown_state == SRV_SHUTDOWN_EXIT_THREADS);
 
   if (trx_sys == nullptr) {
     return;
   }
 
-  ulint size = trx_sys->mvcc->size();
+  ulint size = trx_sys->view_count();
 
   if (size > 0) {
     ib::error(ER_IB_MSG_1201) << "All read views were not closed before"
@@ -557,136 +963,29 @@ void trx_sys_close(void) {
                               << size << " read views open";
   }
 
-  sess_close(trx_dummy_sess);
-  trx_dummy_sess = nullptr;
+  if (trx_dummy_sess != nullptr) {
+    sess_close(trx_dummy_sess);
+    trx_dummy_sess = nullptr;
+  }
 
   trx_purge_sys_close();
 
-  /* Only prepared transactions may be left in the system. Free them. */
-  ut_a(UT_LIST_GET_LEN(trx_sys->rw_trx_list) == trx_sys->n_prepared_trx);
-
-  for (trx_t *trx = UT_LIST_GET_FIRST(trx_sys->rw_trx_list); trx != nullptr;
-       trx = UT_LIST_GET_FIRST(trx_sys->rw_trx_list)) {
-    trx_free_prepared(trx);
-  }
+  trx_sys->rw_trx_hash.destroy();
 
   /* There can't be any active transactions. */
   trx_sys->rsegs.~Rsegs();
 
   trx_sys->tmp_rsegs.~Rsegs();
 
-  UT_DELETE(trx_sys->mvcc);
-
-  ut_a(UT_LIST_GET_LEN(trx_sys->rw_trx_list) == 0);
-  ut_a(UT_LIST_GET_LEN(trx_sys->mysql_trx_list) == 0);
-  ut_a(UT_LIST_GET_LEN(trx_sys->serialisation_list) == 0);
+  ut_a(UT_LIST_GET_LEN(trx_sys->trx_list) == 0);
 
   /* We used placement new to create this mutex. Call the destructor. */
   mutex_free(&trx_sys->mutex);
-
-  trx_sys->rw_trx_ids.~trx_ids_t();
-
-  trx_sys->rw_trx_set.~TrxIdSet();
 
   ut_free(trx_sys);
 
   trx_sys = nullptr;
 }
-
-/** @brief Convert an undo log to TRX_UNDO_PREPARED state on shutdown.
-
-If any prepared ACTIVE transactions exist, and their rollback was
-prevented by innodb_force_recovery, we convert these transactions to
-XA PREPARE state in the main-memory data structures, so that shutdown
-will proceed normally. These transactions will again recover as ACTIVE
-on the next restart, and they will be rolled back unless
-innodb_force_recovery prevents it again.
-
-@param[in]	trx	transaction
-@param[in,out]	undo	undo log to convert to TRX_UNDO_PREPARED */
-static void trx_undo_fake_prepared(const trx_t *trx, trx_undo_t *undo) {
-  ut_ad(srv_force_recovery >= SRV_FORCE_NO_TRX_UNDO);
-  ut_ad(trx_state_eq(trx, TRX_STATE_ACTIVE));
-  ut_ad(trx->is_recovered);
-
-  if (undo != nullptr) {
-    ut_ad(undo->state == TRX_UNDO_ACTIVE);
-    undo->state = TRX_UNDO_PREPARED;
-  }
-}
-
-/*********************************************************************
-Check if there are any active (non-prepared) transactions.
-@return total number of active transactions or 0 if none */
-ulint trx_sys_any_active_transactions(void) {
-  trx_sys_mutex_enter();
-
-  ulint total_trx = UT_LIST_GET_LEN(trx_sys->mysql_trx_list);
-
-  if (total_trx == 0) {
-    total_trx = UT_LIST_GET_LEN(trx_sys->rw_trx_list);
-    ut_a(total_trx >= trx_sys->n_prepared_trx);
-
-    if (total_trx > trx_sys->n_prepared_trx &&
-        srv_force_recovery >= SRV_FORCE_NO_TRX_UNDO) {
-      for (trx_t *trx = UT_LIST_GET_FIRST(trx_sys->rw_trx_list); trx != nullptr;
-           trx = UT_LIST_GET_NEXT(trx_list, trx)) {
-        if (!trx_state_eq(trx, TRX_STATE_ACTIVE) || !trx->is_recovered) {
-          continue;
-        }
-        /* This was a recovered transaction whose rollback was disabled by
-        the innodb_force_recovery setting. Pretend that it is in XA PREPARE
-        state so that shutdown will work. */
-        trx_undo_fake_prepared(trx, trx->rsegs.m_redo.insert_undo);
-        trx_undo_fake_prepared(trx, trx->rsegs.m_redo.update_undo);
-        trx_undo_fake_prepared(trx, trx->rsegs.m_noredo.insert_undo);
-        trx_undo_fake_prepared(trx, trx->rsegs.m_noredo.update_undo);
-        trx->state = TRX_STATE_PREPARED;
-        trx_sys->n_prepared_trx++;
-      }
-    }
-
-    ut_a(total_trx >= trx_sys->n_prepared_trx);
-    total_trx -= trx_sys->n_prepared_trx;
-  }
-
-  trx_sys_mutex_exit();
-
-  return (total_trx);
-}
-
-#ifdef UNIV_DEBUG
-/** Validate the trx_ut_list_t.
- @return true if valid. */
-static bool trx_sys_validate_trx_list_low(
-    trx_ut_list_t *trx_list) /*!< in: &trx_sys->rw_trx_list */
-{
-  const trx_t *trx;
-  const trx_t *prev_trx = nullptr;
-
-  ut_ad(trx_sys_mutex_own());
-
-  ut_ad(trx_list == &trx_sys->rw_trx_list);
-
-  for (trx = UT_LIST_GET_FIRST(*trx_list); trx != nullptr;
-       prev_trx = trx, trx = UT_LIST_GET_NEXT(trx_list, prev_trx)) {
-    check_trx_state(trx);
-    ut_a(prev_trx == nullptr || prev_trx->id > trx->id);
-  }
-
-  return (true);
-}
-
-/** Validate the trx_sys_t::rw_trx_list.
- @return true if the list is valid. */
-bool trx_sys_validate_trx_list() {
-  ut_ad(trx_sys_mutex_own());
-
-  ut_a(trx_sys_validate_trx_list_low(&trx_sys->rw_trx_list));
-
-  return (true);
-}
-#endif /* UNIV_DEBUG */
 #endif /* !UNIV_HOTBACKUP */
 
 /** A list of undo tablespace IDs found in the TRX_SYS page. These are the

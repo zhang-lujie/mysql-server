@@ -35,6 +35,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "univ.i"
 
+#include "lf.h"
+
 #include "buf0buf.h"
 #include "fil0fil.h"
 #include "trx0types.h"
@@ -54,7 +56,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 typedef UT_LIST_BASE_NODE_T(trx_t) trx_ut_list_t;
 
 // Forward declaration
-class MVCC;
 class ReadView;
 
 /** The transaction system */
@@ -130,16 +131,6 @@ UNIV_INLINE
 void trx_sysf_rseg_set_page_no(trx_sysf_t *sys_header, ulint i,
                                page_no_t page_no, mtr_t *mtr);
 
-/** Allocates a new transaction id.
- @return new, allocated trx id */
-UNIV_INLINE
-trx_id_t trx_sys_get_new_trx_id();
-/** Determines the maximum transaction id.
- @return maximum currently allocated trx id; will be stale after the
- next call to trx_sys_get_new_trx_id() */
-UNIV_INLINE
-trx_id_t trx_sys_get_max_trx_id(void);
-
 #ifdef UNIV_DEBUG
 /* Flag to control TRX_RSEG_N_SLOTS behavior debugging. */
 extern uint trx_rseg_n_slots_debug;
@@ -161,54 +152,6 @@ void trx_write_trx_id(byte *ptr, trx_id_t id);
 UNIV_INLINE
 trx_id_t trx_read_trx_id(
     const byte *ptr); /*!< in: pointer to memory from where to read */
-
-/** Looks for the trx handle with the given id in rw trxs list.
- The caller must be holding trx_sys->mutex.
- @param[in]   trx_id   trx id to search for
- @return the trx handle or NULL if not found */
-UNIV_INLINE
-trx_t *trx_get_rw_trx_by_id(trx_id_t trx_id);
-
-/** Returns the minimum trx id in rw trx list. This is the smallest id for which
- the trx can possibly be active. (But, you must look at the trx->state to
- find out if the minimum trx id transaction itself is active, or already
- committed.)
- @return the minimum trx id, or trx_sys->max_trx_id if the trx list is empty */
-UNIV_INLINE
-trx_id_t trx_rw_min_trx_id(void);
-
-/** Checks if a rw transaction with the given id is active.
-@param[in]	trx_id		trx id of the transaction
-@param[in]	corrupt		NULL or pointer to a flag that will be set if
-                                corrupt
-@return transaction instance if active, or NULL */
-UNIV_INLINE
-trx_t *trx_rw_is_active_low(trx_id_t trx_id, ibool *corrupt);
-
-/** Checks if a rw transaction with the given id is active.
-Please note, that positive result means only that the trx was active
-at some moment during the call, but it might have already become
-TRX_STATE_COMMITTED_IN_MEMORY before the call returns to the caller, as this
-transition is protected by trx->mutex and trx_sys->mutex, but it is impossible
-for the caller to hold any of these mutexes when calling this function as the
-function itself internally acquires trx_sys->mutex which would cause recurrent
-mutex acquisition if caller already had trx_sys->mutex, or latching order
-violation in case of holding trx->mutex.
-@param[in]	trx_id		trx id of the transaction
-@param[in]	corrupt		NULL or pointer to a flag that will be set if
-                                corrupt
-@param[in]	do_ref_count	if true then increment the trx_t::n_ref_count
-@return transaction instance if active, or NULL; */
-UNIV_INLINE
-trx_t *trx_rw_is_active(trx_id_t trx_id, ibool *corrupt, bool do_ref_count);
-
-#if defined UNIV_DEBUG || defined UNIV_BLOB_LIGHT_DEBUG
-/** Assert that a transaction has been recovered.
- @return true */
-UNIV_INLINE
-ibool trx_assert_recovered(trx_id_t trx_id) /*!< in: transaction identifier */
-    MY_ATTRIBUTE((warn_unused_result));
-#endif /* UNIV_DEBUG || UNIV_BLOB_LIGHT_DEBUG */
 
 /** Persist transaction number limit below which all transaction GTIDs
 are persisted to disk table.
@@ -248,28 +191,7 @@ void trx_sys_update_mysql_binlog_offset(trx_t *trx, mtr_t *mtr);
 
 /** Shutdown/Close the transaction system. */
 void trx_sys_close(void);
-
-/** Determine if there are incomplete transactions in the system.
-@return whether incomplete transactions need rollback */
-UNIV_INLINE
-bool trx_sys_need_rollback();
-
-/*********************************************************************
-Check if there are any active (non-prepared) transactions.
-@return total number of active transactions or 0 if none */
-ulint trx_sys_any_active_transactions(void);
 #endif /* !UNIV_HOTBACKUP */
-/**
-Add the transaction to the RW transaction set
-@param trx		transaction instance to add */
-UNIV_INLINE
-void trx_sys_rw_trx_add(trx_t *trx);
-
-#ifdef UNIV_DEBUG
-/** Validate the trx_sys_t::rw_trx_list.
- @return true if the list is valid */
-bool trx_sys_validate_trx_list();
-#endif /* UNIV_DEBUG */
 
 /** Initialize trx_sys_undo_spaces, called once during srv_start(). */
 void trx_sys_undo_spaces_init();
@@ -423,58 +345,235 @@ class Space_Ids : public std::vector<space_id_t, ut_allocator<space_id_t>> {
 };
 
 #ifndef UNIV_HOTBACKUP
+trx_t *current_trx();
+
+struct rw_trx_hash_element_t {
+  rw_trx_hash_element_t() : trx(nullptr) {
+    mutex_create(LATCH_ID_RW_TRX_HASH_ELEMENT, &mutex);
+  }
+
+  ~rw_trx_hash_element_t() { mutex_free(&mutex); }
+
+  /* lf_hash_init() relies on this to be first in the struct. */
+  trx_id_t id = 0;
+
+  std::atomic<trx_id_t> no;
+
+  trx_t *trx;
+
+  ib_mutex_t mutex;
+};
+
+/** Wrapper around LF_HASH to store set of in-memory read-write transactions. */
+class rw_trx_hash_t {
+  LF_HASH hash;
+
+  /** Constructor callback for lock-free allocator.
+
+  Object is just allocated and is not yet accessible via rw_trx_hash by
+  concurrent threads. Object can be reused multiple times before it is freed.
+  Every time object is being reused initialize() callback is called. */
+  static void rw_trx_hash_constructor(uchar *arg);
+
+  /** Destructor callback for lock-free allocator.
+
+  Object is about to be freed and is not accessible via rw_trx_hash by
+  concurrent threads. */
+  static void rw_trx_hash_destructor(uchar *arg);
+
+  /** Destructor callback for lock-free allocator.
+
+  This destructor is used at shutdown. It frees remaining transaction objects.
+
+  XA PREPARED transactions may remain if they haven't been committed or rolled
+  back. ACTIVE transactions may remain if startup was interrupted or server is
+  running in read-only mode or for certain srv_force_recovery levels. */
+  static void rw_trx_hash_shutdown_destructor(uchar *arg);
+
+  /** Initializer callback for lock-free hash.
+
+  Object is not yet accessible via rw_trx_hash by concurrent threads, but is
+  about to become such. Object id can be changed only by this callback and
+  remains the same until all pins to this object are released.
+
+  Object trx can be changed to 0 by erase() under object mutex protection,
+  which indicates it is about to be removed from lock-free hash and become not
+  accessible by concurrent threads. */
+  static void rw_trx_hash_initialize(rw_trx_hash_element_t *element,
+                                     trx_t *trx);
+
+  /** Gets LF_HASH pins.
+
+  Pins are used to protect object from being destroyed or reused. They are
+  normally stored in trx object for quick access. If caller doesn't have trx
+  available, we try to get it using current_trx(). If caller doesn't have trx at
+  all, temporary pins are allocated. */
+  LF_PINS *get_pins(trx_t *trx);
+
+  struct eliminate_duplicates_arg {
+    trx_ids_t ids;
+    lf_hash_walk_func *action;
+    void *argument;
+
+    eliminate_duplicates_arg(size_t size, lf_hash_walk_func *act, void *arg)
+        : action(act), argument(arg) {
+      ids.reserve(size);
+    }
+  };
+
+  static bool eliminate_duplicates(rw_trx_hash_element_t *element,
+                                   eliminate_duplicates_arg *arg);
+
+#ifdef UNIV_DEBUG
+  static void validate_element(trx_t *trx);
+
+  struct debug_iterator_arg {
+    lf_hash_walk_func *action;
+    void *argument;
+  };
+
+  static bool debug_iterator(rw_trx_hash_element_t *element,
+                             debug_iterator_arg *arg);
+#endif /* UNIV_DEBUG */
+
+ public:
+  void init();
+
+  void destroy();
+
+  /** Releases LF_HASH pins.
+
+  Must be called by thread that owns trx_t object when the later is being
+  "detached" from thread (e.g. released to the pool by trx_free()). Can be
+  called earlier if thread is expected not to use rw_trx_hash.
+
+  Since pins are not allowed to be transferred to another thread,
+  initialisation thread calls this for recovered transactions. */
+  void put_pins(trx_t *trx);
+
+  /** Finds trx object in lock-free hash with given id.
+
+  Only ACTIVE or PREPARED trx objects may participate in hash. Nevertheless the
+  transaction may get committed before this method returns.
+
+  With do_ref_count == false the caller may dereference returned trx pointer
+  only if lock_sys.mutex was acquired before calling find().
+
+  With do_ref_count == true caller dereferemce trx even if it is not holding
+  lock_sys.mutex. Caller is responsible for calling trx->release_reference()
+  when it is done playing with trx.
+
+  Ideally this method should get caller rw_trx_hash_pins along with trx object
+  as a parameter, similar to insert() and erase(). However most callers lose trx
+  early in their call chains and it is not that easy to pass them through.
+
+  So we take more expensive approach: get trx through current_thd()->ha_data.
+  Some threads don't have trx attached to THD, and at least server
+  initialisation thread, fts_optimize_thread, srv_master_thread,
+  dict_stats_thread, srv_monitor_thread, btr_defragment_thread don't even have
+  THD at all. For such cases we allocate pins only for duration of search and
+  free them immediately.
+
+  This has negative performance impact and should be fixed eventually (by
+  passing caller_trx as a parameter). Still stream of DML is more or less Ok.
+
+  @return pointer to trx or nullptr if not found */
+  trx_t *find(trx_t *caller_trx, trx_id_t trx_id, bool do_ref_count);
+
+  /** Inserts trx to lock-free hash.
+
+  Object becomes accessible via rw_trx_hash. */
+  void insert(trx_t *trx);
+
+  /** Removes trx from lock-free hash.
+
+  Object becomes not accessible via rw_trx_hash. But it still can be pinned by
+  concurrent find(), which is supposed to release it immediately after it sees
+  object trx is nullptr. */
+  void erase(trx_t *trx);
+
+  /** Returns the number of elements in the hash.
+
+  The number is exact only if hash is protected against concurrent modifications
+  (e.g., single threaded startup or hash is protected by some mutex). Otherwise
+  the number maybe used as a hint only, because it may change even before this
+  method returns. */
+  uint32_t size();
+
+  /** Iterates the hash.
+
+  @param caller_trx used to get/set pins
+  @param action     called for every element in hash
+  @param argument   opque argument passed to action
+
+  May return the same element multiple times if hash is under contention. If
+  caller doesn't like to see the same transaction multiple times, it has to call
+  iterate_no_dups() instead.
+
+  May return element with committed transaction. If caller doesn't like to see
+  committed transactions, it has to skip those under element mutex:
+
+    mutex_enter(&element->mutex);
+    trx_t *trx = element->trx;
+    if (trx != nullptr) {
+      // trx is protected against commit in this branch
+    }
+    mutex_exit(&element->mutex);
+
+  May miss concurrently inserted transactions.
+
+  @return 0 if iteration completed successfuly, or 1 if iteration was
+  interrupted (action returned true) */
+  int iterate(trx_t *caller_trx, const lf_hash_walk_func *action, const void *argument);
+
+  int iterate(const lf_hash_walk_func *action, const void *argument);
+
+  /** Iterates the hash and eliminates duplicate elements.
+
+  @sa iterate() */
+  int iterate_no_dups(trx_t *caller_trx, lf_hash_walk_func *action,
+                      void *argument);
+
+  int iterate_no_dups(lf_hash_walk_func *action, void *argument);
+};
+
 /** The transaction system central memory data structure. */
 struct trx_sys_t {
-  TrxSysMutex mutex; /*!< mutex protecting most fields in
-                     this structure except when noted
-                     otherwise */
+ private:
+  /** To avoid false sharing */
+  char pad1[ut::INNODB_CACHE_LINE_SIZE];
+  /** The smallest number not yet assigned as a transaction id or transaction
+  number. Accessed and updated with atomic operations. */
+  std::atomic<trx_id_t> max_trx_id;
 
-  MVCC *mvcc;                   /*!< Multi version concurrency control
-                                manager */
-  volatile trx_id_t max_trx_id; /*!< The smallest number not yet
-                                assigned as a transaction id or
-                                transaction number. This is declared
-                                volatile because it can be accessed
-                                without holding any mutex during
-                                AC-NL-RO view creation. */
-  std::atomic<trx_id_t> min_active_id;
-  /*!< Minimal transaction id which is
-  still in active state. */
-  trx_ut_list_t serialisation_list;
-  /*!< Ordered on trx_t::no of all the
-  currenrtly active RW transactions */
-#ifdef UNIV_DEBUG
-  trx_id_t rw_max_trx_no; /*!< Max trx number of read-write
-                          transactions added for purge. */
-#endif                    /* UNIV_DEBUG */
+  /** To avoid false sharing */
+  char pad2[ut::INNODB_CACHE_LINE_SIZE];
+  /** Solves race conditions between register_rw() and snapshot_ids() as well as
+  race condition between assign_new_trx_no() and snapshot_ids().
 
-  char pad1[64];             /*!< To avoid false sharing */
-  trx_ut_list_t rw_trx_list; /*!< List of active and committed in
-                             memory read-write transactions, sorted
-                             on trx id, biggest first. Recovered
-                             transactions are always on this list. */
+  @sa register_rw()
+  @sa assign_new_trx_no()
+  @sa snapshot_ids() */
+  std::atomic<trx_id_t> rw_trx_hash_version;
 
-  char pad2[64];                /*!< To avoid false sharing */
-  trx_ut_list_t mysql_trx_list; /*!< List of transactions created
-                                for MySQL. All user transactions are
-                                on mysql_trx_list. The rw_trx_list
-                                can contain system transactions and
-                                recovered transactions that will not
-                                be in the mysql_trx_list.
-                                mysql_trx_list may additionally contain
-                                transactions that have not yet been
-                                started in InnoDB. */
+ public:
+  /** To avoid false sharing */
+  char pad3[ut::INNODB_CACHE_LINE_SIZE];
+  /** Mutex protecting trx list. */
+  mutable TrxSysMutex mutex;
 
-  trx_ids_t rw_trx_ids; /*!< Array of Read write transaction IDs
-                        for MVCC snapshot. A ReadView would take
-                        a snapshot of these transactions whose
-                        changes are not visible to it. We should
-                        remove transactions from the list before
-                        committing in memory and releasing locks
-                        to ensure right order of removal and
-                        consistent snapshot. */
+  /** To avoid false sharing */
+  char pad4[ut::INNODB_CACHE_LINE_SIZE];
+  /** List of all transactions. */
+  trx_ut_list_t trx_list;
 
-  char pad3[64]; /*!< To avoid false sharing */
+  /** To avoid false sharing */
+  char pad5[ut::INNODB_CACHE_LINE_SIZE];
+  /** Lock-free hash of in-memory read-write transactions. Works faster when
+  it's on it's own cache line (tested). */
+  rw_trx_hash_t rw_trx_hash;
+
+  char pad6[ut::INNODB_CACHE_LINE_SIZE]; /*!< To avoid false sharing */
 
   Rsegs rsegs; /*!< Vector of pointers to rollback
                segments. These rsegs are iterated
@@ -492,20 +591,259 @@ struct trx_sys_t {
                    read-only during multi-threaded
                    operation. */
 
-  ulint rseg_history_len;
+  std::atomic<ulint> rseg_history_len;
   /*!< Length of the TRX_RSEG_HISTORY
   list (update undo logs for committed
   transactions), protected by
   rseg->mutex */
 
-  TrxIdSet rw_trx_set; /*!< Mapping from transaction id
-                       to transaction instance */
+  /** To avoid false sharing */
+  char pad7[ut::INNODB_CACHE_LINE_SIZE];
+#ifdef UNIV_DEBUG
+  std::atomic<trx_id_t> rw_max_trx_no; /*!< Max trx number of read-write
+                          transactions added for purge. */
+#endif                                 /* UNIV_DEBUG */
 
-  ulint n_prepared_trx; /*!< Number of transactions currently
-                        in the XA PREPARED state */
+  /** Returns the minimum trx id in rw trx list.
 
-  bool found_prepared_trx; /*!< True if XA PREPARED trxs are
-                           found. */
+  This is the smallest id for which the trx can possibly be active. (But, you
+  must look at trx->state to find out if the minimum trx id transaction itself
+  is active, or already committed.
+
+  @return the minimum trx id, or max_trx_id if the trx list is empty */
+  trx_id_t get_min_trx_id() {
+    trx_id_t id = get_max_trx_id();
+    rw_trx_hash.iterate(
+        reinterpret_cast<lf_hash_walk_func *>(get_min_trx_id_callback), &id);
+    return id;
+  }
+
+  /** Determines the maximum transaction id.
+
+  @return maximum currently allocated trx id; will be stale after the next call
+  to trx_sys.assign_new_trx_no */
+  trx_id_t get_max_trx_id() {
+    return max_trx_id.load(std::memory_order_relaxed);
+  }
+
+  /** Allocates and assigns new transaction serialisation number.
+
+  There's a gap between max_trx_id increment and transaction serialisation
+  number becoming visible through rw_trx_hash. While we're in this gap
+  concurrent thread may come and do MVCC snapshot without seeing allocated but
+  not yet assigned serialisation number. Then at some point purge thread may
+  clone this view. As a result it won't see newly allocated serialisation number
+  and may remove "unnecessary" history data of this transaction from rollback
+  segments.
+
+  rw_trx_hash_version is intended to solve this problem. MVCC snapshot has to
+  wait until max_trx_id == rw_trx_hash_version, which effectively means that all
+  transaction serialisation numbers up to max_trx_id are available through
+  rw_trx_hash.
+
+  We rely on refresh_rw_trx_hash_version() to issue RELEASE memory barrier so
+  that rw_trx_hash_version increment happens after trx->rw_trx_hash_element->no
+  becomes available visible through rw_trx_hash.
+
+  @param trx transaction */
+  void assign_new_trx_no(trx_t *trx) {
+    trx->no = get_new_trx_id_no_refresh();
+    trx->rw_trx_hash_element->no.store(trx->no, std::memory_order_relaxed);
+    refresh_rw_trx_hash_version();
+  }
+
+  /** Takes MVCC snapshot.
+
+  To reduce malloc probability we reserve rw_trx_hash.size() + 32 elements in
+  ids.
+
+  For details about get_rw_trx_hash_version() != get_max_trx_id() spin
+  @sa register_rw() and @sa assign_new_trx_no().
+
+  We rely on get_rw_trx_hash_version() to issue ACQUIRE memory barrier so that
+  loading of rw_trx_hash_version happens before accessing rw_trx_hash.
+
+  To optimise snapshot creation rw_trx_hash.iterate is being used instead of
+  rw_trx_hash.iterate_no_dups(). It means that some transaction identifiers may
+  appear multiple times in ids.
+
+  @param[in,out] caller_trx used to get access to rw_trx_hash_pins
+  @param[out]    ids        array to store registered transaction identifiers
+  @param[out]    max_trx_id variable to store max_trx_id value
+  @param[out]    mix_trx_no variable to store min(trx->no) value */
+  void snapshot_ids(trx_t *caller_trx, trx_ids_t *ids, trx_id_t *max_trx_id,
+                    trx_id_t *min_trx_no) {
+    ut_ad(!mutex_own(&mutex));
+    snapshot_ids_arg arg(ids);
+
+    while ((arg.id = get_rw_trx_hash_version()) != get_max_trx_id()) {
+      ut_delay(1);
+    }
+    arg.no = arg.id;
+
+    uint32_t hashSize = rw_trx_hash.size();
+    ids->clear();
+
+    if (hashSize != 0) {
+        ids->reserve(hashSize + 32);
+        rw_trx_hash.iterate(
+            caller_trx, reinterpret_cast<lf_hash_walk_func *>(copy_one_id), &arg);
+    }
+
+    *max_trx_id = arg.id;
+    *min_trx_no = arg.no;
+  }
+
+  /** Initialiser for max_trx_id and rw_trx_hash_version. */
+  void init_max_trx_id(trx_id_t value) {
+    max_trx_id = rw_trx_hash_version = value;
+  }
+
+  /** @return total number of active (non-prepared) transactions */
+  ulint any_active_transactions();
+
+  /** Registers read-write transaction.
+
+  Transaction becomes visible to MVCC.
+
+  There's a gap between max_trx_id increment and transaction becoming visible
+  through rw_trx_hash. While we're in this gap concurrent thread may come and do
+  MVCC snapshot. As a result concurrent readview will be able to observe records
+  owned by this transaction even before it is committed.
+
+  rw_trx_hash_version is intendded to solve this problem. MVCC snapshot has to
+  wait until max_trx_id == rw_trx_hash_version, which effectively means that all
+  transactions up to max_trx_id are available through rw_trx_hash.
+
+  We rely on refresh_rw_trx_hash_version() to issue RELEASE memory barrier so
+  that rw_trx_hash_version increment happens after transaction becomes visible
+  through rw_trx_hash. */
+  void register_rw(trx_t *trx) {
+    trx->id = get_new_trx_id_no_refresh();
+    rw_trx_hash.insert(trx);
+    refresh_rw_trx_hash_version();
+  }
+
+  /** For replica only, registers a faked read-write transaction. */
+  void register_rw_replica(trx_t *trx) {
+    /* trx->id and trx_sys->max_trx_id were already set. */
+    rw_trx_hash.insert(trx);
+    rw_trx_hash_version.store(get_max_trx_id(), std::memory_order_release);
+  }
+
+  /** Deregisters read-write transaction.
+
+  Transaction is removed from rw_trx_hash, which releases all implicit locks.
+  MVCC snapshot won't see this transaction anymore. */
+  void deregister_rw(trx_t *trx) { rw_trx_hash.erase(trx); }
+
+  bool is_registered(trx_t *caller_trx, trx_id_t id) {
+    return (id > 0) && (find(caller_trx, id, false) != nullptr);
+  }
+
+  trx_t *find(trx_t *caller_trx, trx_id_t id, bool do_ref_count = true) {
+    return rw_trx_hash.find(caller_trx, id, do_ref_count);
+  }
+
+  /** Registers transaction in trx_sys.
+
+  @param trx transaction */
+  void register_trx(trx_t *trx) {
+    mutex_enter(&mutex);
+    UT_LIST_ADD_FIRST(trx_list, trx);
+    mutex_exit(&mutex);
+  }
+
+  /** Deregisters transaction in trx_sys.
+
+  @param trx transaction */
+  void deregister_trx(trx_t *trx) {
+    mutex_enter(&mutex);
+    UT_LIST_REMOVE(trx_list, trx);
+    mutex_exit(&mutex);
+  }
+
+  /** Clones the oldest view and stores it in view.
+
+  No need to call ReadView::close(). The caller owns the view that is passed in.
+  This function is called by purge thread to determine whether it should purge
+  the delete marked record or not. */
+  void clone_oldest_view(ReadView *view = NULL);
+
+  /** @return the number of active views. */
+  size_t view_count() const {
+    size_t count = 0;
+
+    mutex_enter(&mutex);
+    for (const trx_t *trx = UT_LIST_GET_FIRST(trx_list); trx != nullptr;
+         trx = UT_LIST_GET_NEXT(trx_list, trx)) {
+      if (trx->read_view.get_state() == READ_VIEW_STATE_OPEN) {
+        ++count;
+      }
+    }
+    mutex_exit(&mutex);
+    return count;
+  }
+
+  ulint n_prepared_trx(); /*!< Return number of transactions currently
+                          in the XA PREPARED state. */
+  bool found_prepared_trx; /*!< True if XA PREPARED transactions are found. */
+
+ private:
+  static bool get_min_trx_id_callback(rw_trx_hash_element_t *element,
+                                      trx_id_t *id) {
+    if (element->id < *id) {
+      mutex_enter(&element->mutex);
+      /* We don't care about read-only transactions here. */
+      if (element->trx != nullptr &&
+          element->trx->rsegs.m_redo.rseg != nullptr) {
+        *id = element->id;
+      }
+      mutex_exit(&element->mutex);
+    }
+    return false;
+  }
+
+  struct snapshot_ids_arg {
+    snapshot_ids_arg(trx_ids_t *_ids) : ids(_ids), id(0), no(0) {}
+
+    trx_ids_t *ids;
+    trx_id_t id;
+    trx_id_t no;
+  };
+
+  static bool copy_one_id(rw_trx_hash_element_t *element,
+                          snapshot_ids_arg *arg) {
+    if (element->id < arg->id) {
+      trx_id_t no = element->no.load(std::memory_order_relaxed);
+      arg->ids->push_back(element->id);
+      if (no < arg->no) {
+        arg->no = no;
+      }
+    }
+    return false;
+  }
+
+  /** Get for rw_trx_hash_version, must issue ACQUIRE memory barrier. */
+  trx_id_t get_rw_trx_hash_version() {
+    return rw_trx_hash_version.load(std::memory_order_acquire);
+  }
+
+  /** Increments rw_trx_hash_version, must issue RELEASE memory barrier. */
+  void refresh_rw_trx_hash_version() {
+    rw_trx_hash_version.fetch_add(1, std::memory_order_release);
+  }
+
+  /** Allocates new transaction id without refreshing rw_trx_hash_version.
+
+  This method is extracted for exclusive use by register_rw() and
+  assign_new_trx_no() where new id must be allocated atomically with payload
+  of these methods from MVCC snapshot point of view.
+
+  @sa assign_new_trx_no()
+
+  @return new transaction id */
+  trx_id_t get_new_trx_id_no_refresh();
 };
 
 #endif /* !UNIV_HOTBACKUP */

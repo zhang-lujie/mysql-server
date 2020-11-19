@@ -676,6 +676,7 @@ static PSI_mutex_info all_innodb_mutexes[] = {
     PSI_MUTEX_KEY(rtr_match_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(rtr_path_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(rtr_ssn_mutex, 0, 0, PSI_DOCUMENT_ME),
+    PSI_MUTEX_KEY(rw_trx_hash_element_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(trx_sys_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(zip_pad_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(master_key_id_mutex, 0, 0, PSI_DOCUMENT_ME),
@@ -2853,6 +2854,17 @@ ibool trx_is_strict(trx_t *trx) /*!< in: transaction */
           (!trx->in_truncate));
 }
 
+/** Gets current trx.
+ This function may be called during InnoDB initialisation, when
+ innodb_hton_ptr->slot is not yet set to meaningful value. */
+trx_t *current_trx() {
+  THD *thd = current_thd;
+  if (UNIV_LIKELY(thd != nullptr) && innodb_hton_ptr->slot != HA_SLOT_UNDEF) {
+    return thd_to_trx(thd);
+  }
+  return nullptr;
+}
+
 /** Resets some fields of a m_prebuilt struct. The template is used in fast
  retrieval of just those column values MySQL needs in its processing. */
 void ha_innobase::reset_template(void) {
@@ -2906,7 +2918,7 @@ void ha_innobase::init_table_handle_for_HANDLER(void) {
 
   /* Assign a read view if the transaction does not have it yet */
 
-  trx_assign_read_view(m_prebuilt->trx);
+  m_prebuilt->trx->read_view.open(m_prebuilt->trx);
 
   innobase_register_trx(ht, m_user_thd, m_prebuilt->trx);
 
@@ -4952,7 +4964,7 @@ static int innobase_init_files(dict_init_mode_t dict_init_mode,
       return innodb_init_abort();
     }
 
-    if (trx_sys->found_prepared_trx) {
+    if (trx_sys->found_prepared_trx > 0) {
       ib::error(ER_DD_UPGRADE_FOUND_PREPARED_XA_TRANSACTION);
       return innodb_init_abort();
     }
@@ -5198,7 +5210,7 @@ static int innobase_start_trx_and_assign_read_view(
       innobase_map_isolation_level(thd_get_trx_isolation(thd));
 
   if (trx->isolation_level == TRX_ISO_REPEATABLE_READ) {
-    trx_assign_read_view(trx);
+    trx->read_view.open(trx);
   } else {
     push_warning_printf(thd, Sql_condition::SL_WARNING, HA_ERR_UNSUPPORTED,
                         "InnoDB: WITH CONSISTENT SNAPSHOT"
@@ -10096,7 +10108,7 @@ int ha_innobase::sample_init(void *&scan_ctx, double sampling_percentage,
   auto trx = m_prebuilt->trx;
   innobase_register_trx(ht, ha_thd(), trx);
   trx_start_if_not_started_xa(trx, false);
-  trx_assign_read_view(trx);
+  trx->read_view.open(trx);
 
   /* Parallel read is not currently supported for sampling. */
   size_t n_threads = 1;
@@ -17820,13 +17832,8 @@ int ha_innobase::external_lock(THD *thd, /*!< in: handle to the user thread */
         ut_d(trx->is_dd_trx = false);
       }
 
-    } else if (trx->isolation_level <= TRX_ISO_READ_COMMITTED &&
-               MVCC::is_view_active(trx->read_view)) {
-      mutex_enter(&trx_sys->mutex);
-
-      trx_sys->mvcc->view_close(trx->read_view, true);
-
-      mutex_exit(&trx_sys->mutex);
+    } else if (trx->isolation_level <= TRX_ISO_READ_COMMITTED) {
+      trx->read_view.close();
     }
   }
 
@@ -18422,16 +18429,11 @@ THR_LOCK_DATA **ha_innobase::store_lock(
     trx->isolation_level =
         innobase_map_isolation_level((enum_tx_isolation)thd_tx_isolation(thd));
 
-    if (trx->isolation_level <= TRX_ISO_READ_COMMITTED &&
-        MVCC::is_view_active(trx->read_view)) {
+    if (trx->isolation_level <= TRX_ISO_READ_COMMITTED) {
       /* At low transaction isolation levels we let
       each consistent read set its own snapshot */
 
-      mutex_enter(&trx_sys->mutex);
-
-      trx_sys->mvcc->view_close(trx->read_view, true);
-
-      mutex_exit(&trx_sys->mutex);
+      trx->read_view.close();
     }
   }
 

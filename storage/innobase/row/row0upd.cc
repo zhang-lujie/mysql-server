@@ -3057,7 +3057,8 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
     }
   }
 
-  ut_ad(lock_trx_has_rec_x_lock(thr, index->table, btr_pcur_get_block(pcur),
+  ut_ad((row_get_rec_trx_id(rec, index, offsets) == trx->id) ||
+        lock_trx_has_rec_x_lock(thr, index->table, btr_pcur_get_block(pcur),
                                 page_rec_get_heap_no(rec)));
 
   /* NOTE: the following function calls will also commit mtr */

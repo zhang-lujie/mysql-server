@@ -38,117 +38,19 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "trx0types.h"
 
-// Friend declaration
-class MVCC;
+/** View is not visible to purge thread. */
+constexpr int32_t READ_VIEW_STATE_CLOSED = 0;
+
+/** View is being opened, purge thread must wait for state change. */
+constexpr int32_t READ_VIEW_STATE_SNAPSHOT = 1;
+
+/** View is visible to purge thread. */
+constexpr int32_t READ_VIEW_STATE_OPEN = 2;
 
 /** Read view lists the trx ids of those transactions for which a consistent
 read should not see the modifications to the database. */
 
 class ReadView {
-  /** This is similar to a std::vector but it is not a drop
-  in replacement. It is specific to ReadView. */
-  class ids_t {
-    typedef trx_ids_t::value_type value_type;
-
-    /**
-    Constructor */
-    ids_t() : m_ptr(), m_size(), m_reserved() {}
-
-    /**
-    Destructor */
-    ~ids_t() { UT_DELETE_ARRAY(m_ptr); }
-
-    /**
-    Try and increase the size of the array. Old elements are
-    copied across. It is a no-op if n is < current size.
-
-    @param n 		Make space for n elements */
-    void reserve(ulint n);
-
-    /**
-    Resize the array, sets the current element count.
-    @param n		new size of the array, in elements */
-    void resize(ulint n) {
-      ut_ad(n <= capacity());
-
-      m_size = n;
-    }
-
-    /**
-    Reset the size to 0 */
-    void clear() { resize(0); }
-
-    /**
-    @return the capacity of the array in elements */
-    ulint capacity() const { return (m_reserved); }
-
-    /**
-    Copy and overwrite the current array contents
-
-    @param start		Source array
-    @param end		Pointer to end of array */
-    void assign(const value_type *start, const value_type *end);
-
-    /**
-    Insert the value in the correct slot, preserving the order.
-    Doesn't check for duplicates. */
-    void insert(value_type value);
-
-    /**
-    @return the value of the first element in the array */
-    value_type front() const {
-      ut_ad(!empty());
-
-      return (m_ptr[0]);
-    }
-
-    /**
-    @return the value of the last element in the array */
-    value_type back() const {
-      ut_ad(!empty());
-
-      return (m_ptr[m_size - 1]);
-    }
-
-    /**
-    Append a value to the array.
-    @param value		the value to append */
-    void push_back(value_type value);
-
-    /**
-    @return a pointer to the start of the array */
-    trx_id_t *data() { return (m_ptr); }
-
-    /**
-    @return a const pointer to the start of the array */
-    const trx_id_t *data() const { return (m_ptr); }
-
-    /**
-    @return the number of elements in the array */
-    ulint size() const { return (m_size); }
-
-    /**
-    @return true if size() == 0 */
-    bool empty() const { return (size() == 0); }
-
-   private:
-    // Prevent copying
-    ids_t(const ids_t &);
-    ids_t &operator=(const ids_t &);
-
-   private:
-    /** Memory for the array */
-    value_type *m_ptr;
-
-    /** Number of active elements in the array */
-    ulint m_size;
-
-    /** Size of m_ptr in elements */
-    ulint m_reserved;
-
-    friend class ReadView;
-  };
-
  public:
   ReadView();
   ~ReadView();
@@ -178,9 +80,7 @@ class ReadView {
       return (true);
     }
 
-    const ids_t::value_type *p = m_ids.data();
-
-    return (!std::binary_search(p, p + m_ids.size(), id));
+    return (!std::binary_search(m_ids.begin(), m_ids.end(), id));
   }
 
   /**
@@ -188,16 +88,50 @@ class ReadView {
   @return true if view sees transaction id */
   bool sees(trx_id_t id) const { return (id < m_up_limit_id); }
 
+  /** Creates a snapshot where exactly the transaction serialized before this
+  point in time are seen in the view.
+
+  @param[in, out] trx transaction */
+  void snapshot(trx_t *trx);
+
+  /** Open a read view where exactly the transaction serialized before this
+  point in time are seen in the view.
+
+  View become visible to purge thread.
+
+  @param[in,out] trx transaction */
+  void open(trx_t *trx);
+
   /**
   Mark the view as closed */
   void close() {
-    ut_ad(m_creator_trx_id != TRX_ID_MAX);
-    m_creator_trx_id = TRX_ID_MAX;
+    int32_t state = m_state.load(std::memory_order_relaxed);
+    ut_ad(state == READ_VIEW_STATE_CLOSED || state == READ_VIEW_STATE_OPEN);
+    if (state == READ_VIEW_STATE_OPEN) {
+      m_state.store(READ_VIEW_STATE_CLOSED, std::memory_order_relaxed);
+    }
   }
 
-  /**
-  @return true if the view is closed */
-  bool is_closed() const { return (m_closed); }
+  /** m_state getter fir trx_sys::clone_oldest_view() & trx_sys::size(). */
+  int32_t get_state() const { return m_state.load(std::memory_order_acquire); }
+
+  /** Returns ture if view is open.
+
+  Only used by view owner thread, thus we can omit atomic operations. */
+  bool is_open() const {
+    int32_t state = m_state.load(std::memory_order_relaxed);
+    ut_ad(state == READ_VIEW_STATE_OPEN || state == READ_VIEW_STATE_CLOSED);
+    return (state == READ_VIEW_STATE_OPEN);
+  }
+
+  /** Set the creator transaction id.
+
+  This should be set only for views created by RW transactions. */
+  void set_creator_trx_id(trx_id_t id) {
+    ut_ad(id > 0);
+    ut_ad(m_creator_trx_id == 0);
+    m_creator_trx_id = id;
+  }
 
   /**
   Write the limits to the file.
@@ -244,35 +178,8 @@ class ReadView {
     return (m_low_limit_no <= rhs->m_low_limit_no);
   }
 #endif /* UNIV_DEBUG */
- private:
-  /**
-  Copy the transaction ids from the source vector */
-  inline void copy_trx_ids(const trx_ids_t &trx_ids);
 
-  /**
-  Opens a read view where exactly the transactions serialized before this
-  point in time are seen in the view.
-  @param id		Creator transaction id */
-  inline void prepare(trx_id_t id);
-
-  /**
-  Copy state from another view. Must call copy_complete() to finish.
-  @param other		view to copy from */
-  inline void copy_prepare(const ReadView &other);
-
-  /**
-  Complete the copy, insert the creator transaction id into the
-  m_trx_ids too and adjust the m_up_limit_id *, if required */
-  inline void copy_complete();
-
-  /**
-  Set the creator transaction id, existing id must be 0 */
-  void creator_trx_id(trx_id_t id) {
-    ut_ad(m_creator_trx_id == 0);
-    m_creator_trx_id = id;
-  }
-
-  friend class MVCC;
+  void copy(const ReadView &other);
 
  private:
   // Disable copying
@@ -295,7 +202,7 @@ class ReadView {
 
   /** Set of RW transactions that was active when this snapshot
   was taken */
-  ids_t m_ids;
+  trx_ids_t m_ids;
 
   /** The view does not need to see the undo logs for transactions
   whose transaction number is strictly smaller (<) than this value:
@@ -310,14 +217,23 @@ class ReadView {
   trx_id_t m_view_low_limit_no;
 #endif /* UNIV_DEBUG */
 
-  /** AC-NL-RO transaction view that has been "closed". */
-  bool m_closed;
+  /** View state.
 
-  typedef UT_LIST_NODE_T(ReadView) node_t;
+  It is not defined as enum as it has to be updated using atomic operations.
+  Possible values are READ_VIEW_STATE_CLOSED, READ_VIEW_STATE_SNAPSHOT and
+  READ_VIEW_STATE_OPEN.
 
-  /** List of read views in trx_sys */
-  byte pad1[64 - sizeof(node_t)];
-  node_t m_view_list;
+  Possible state transfers...
+
+  Start view open:
+  READ_VIEW_STATE_CLOSED -> READ_VIEW_STATE_SNAPSHOT
+
+  Complete view open:
+  READ_VIEW_STATE_SNAPSHOT -> READ_VIEW_STATE_OPEN
+
+  Close view:
+  READ_VIEW_STATE_OPEN -> READ_VIEW_STATE_CLOSED */
+  std::atomic<int32_t> m_state;
 };
 
 #endif

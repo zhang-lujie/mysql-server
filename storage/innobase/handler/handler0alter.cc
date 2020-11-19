@@ -1173,7 +1173,7 @@ int ha_innobase::parallel_scan_init(void *&scan_ctx, size_t &num_threads) {
 
   trx_start_if_not_started_xa(trx, false);
 
-  trx_assign_read_view(trx);
+  trx->read_view.open(trx);
 
   size_t n_threads = thd_parallel_read_threads(m_prebuilt->trx->mysql_thd);
 
@@ -4790,7 +4790,7 @@ static MY_ATTRIBUTE((warn_unused_result)) bool prepare_inplace_alter_table_dict(
   if (ctx->online) {
     /* Assign a consistent read view for
     row_merge_read_clustered_index(). */
-    trx_assign_read_view(ctx->prebuilt->trx);
+    ctx->prebuilt->trx->read_view.open(ctx->prebuilt->trx);
   }
 
   if (fts_index) {
@@ -9764,7 +9764,7 @@ int ha_innopart::parallel_scan_init(void *&scan_ctx, size_t &num_threads) {
 
   trx_start_if_not_started_xa(trx, false);
 
-  trx_assign_read_view(trx);
+  trx->read_view.open(trx);
 
   auto dd_client = ha_thd()->dd_client();
   dd::cache::Dictionary_client::Auto_releaser releaser(dd_client);

@@ -1881,13 +1881,22 @@ void trx_undo_insert_cleanup(trx_undo_ptr_t *undo_ptr, bool noredo) {
   rseg->unlatch();
 }
 
-/** At shutdown, frees the undo logs of a PREPARED transaction. */
-void trx_undo_free_prepared(trx_t *trx) /*!< in/out: PREPARED transaction */
-{
-  ut_ad(srv_shutdown_state.load() == SRV_SHUTDOWN_EXIT_THREADS);
+/** At shutdown, frees the undo logs of a transaction. */
+void trx_undo_free_at_shutdown(trx_t *trx) {
+  if (trx->rsegs.m_redo.update_undo != nullptr) {
+    switch (trx->rsegs.m_redo.update_undo->state) {
+      case TRX_UNDO_PREPARED:
+        break;
+      case TRX_UNDO_CACHED:
+      case TRX_UNDO_TO_FREE:
+      case TRX_UNDO_TO_PURGE:
+      case TRX_UNDO_ACTIVE:
+        ut_ad(trx_state_eq(trx, TRX_STATE_COMMITTED_IN_MEMORY));
+        break;
+      default:
+        ut_error;
+    }
 
-  if (trx->rsegs.m_redo.update_undo) {
-    ut_a(trx->rsegs.m_redo.update_undo->state == TRX_UNDO_PREPARED);
     UT_LIST_REMOVE(trx->rsegs.m_redo.rseg->update_undo_list,
                    trx->rsegs.m_redo.update_undo);
     trx_undo_mem_free(trx->rsegs.m_redo.update_undo);
@@ -1895,8 +1904,20 @@ void trx_undo_free_prepared(trx_t *trx) /*!< in/out: PREPARED transaction */
     trx->rsegs.m_redo.update_undo = nullptr;
   }
 
-  if (trx->rsegs.m_redo.insert_undo) {
-    ut_a(trx->rsegs.m_redo.insert_undo->state == TRX_UNDO_PREPARED);
+  if (trx->rsegs.m_redo.insert_undo != nullptr) {
+    switch (trx->rsegs.m_redo.insert_undo->state) {
+      case TRX_UNDO_PREPARED:
+        break;
+      case TRX_UNDO_CACHED:
+      case TRX_UNDO_TO_FREE:
+      case TRX_UNDO_TO_PURGE:
+      case TRX_UNDO_ACTIVE:
+        ut_ad(trx_state_eq(trx, TRX_STATE_COMMITTED_IN_MEMORY));
+        break;
+      default:
+        ut_error;
+    }
+
     UT_LIST_REMOVE(trx->rsegs.m_redo.rseg->insert_undo_list,
                    trx->rsegs.m_redo.insert_undo);
     trx_undo_mem_free(trx->rsegs.m_redo.insert_undo);
@@ -1904,7 +1925,7 @@ void trx_undo_free_prepared(trx_t *trx) /*!< in/out: PREPARED transaction */
     trx->rsegs.m_redo.insert_undo = nullptr;
   }
 
-  if (trx->rsegs.m_noredo.update_undo) {
+  if (trx->rsegs.m_noredo.update_undo != nullptr) {
     ut_a(trx->rsegs.m_noredo.update_undo->state == TRX_UNDO_PREPARED);
 
     UT_LIST_REMOVE(trx->rsegs.m_noredo.rseg->update_undo_list,
@@ -1913,7 +1934,7 @@ void trx_undo_free_prepared(trx_t *trx) /*!< in/out: PREPARED transaction */
 
     trx->rsegs.m_noredo.update_undo = nullptr;
   }
-  if (trx->rsegs.m_noredo.insert_undo) {
+  if (trx->rsegs.m_noredo.insert_undo != nullptr) {
     ut_a(trx->rsegs.m_noredo.insert_undo->state == TRX_UNDO_PREPARED);
 
     UT_LIST_REMOVE(trx->rsegs.m_noredo.rseg->insert_undo_list,

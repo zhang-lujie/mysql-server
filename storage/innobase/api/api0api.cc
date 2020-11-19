@@ -745,7 +745,7 @@ static ib_err_t ib_create_cursor(ib_crsr_t *ib_crsr,  /*!< out: InnoDB cursor */
       /* Assign a read view if the transaction does
       not have it yet */
 
-      trx_assign_read_view(prebuilt->trx);
+      prebuilt->trx->read_view.open(prebuilt->trx);
     }
 
     *ib_crsr = (ib_crsr_t)cursor;
@@ -936,7 +936,7 @@ ib_err_t ib_cursor_new_trx(ib_crsr_t ib_crsr, /*!< in/out: InnoDB cursor */
 
   cursor->valid_trx = TRUE;
 
-  trx_assign_read_view(prebuilt->trx);
+  prebuilt->trx->read_view.open(prebuilt->trx);
 
   ib_qry_proc_free(&cursor->q_proc);
 

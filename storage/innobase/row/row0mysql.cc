@@ -4672,7 +4672,7 @@ dberr_t row_scan_index_for_mysql(row_prebuilt_t *prebuilt, dict_index_t *index,
       /* No INSERT INTO  ... SELECT  and non-locking selects only. */
       trx_start_if_not_started_xa(prebuilt->trx, false);
 
-      trx_assign_read_view(prebuilt->trx);
+      prebuilt->trx->read_view.open(prebuilt->trx);
 
       auto trx = prebuilt->trx;
 
