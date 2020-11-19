@@ -240,7 +240,7 @@ void trx_purge_sys_create(ulint n_purge_threads, purge_pq_t *purge_queue) {
 
   new (&purge_sys->view) ReadView();
 
-  trx_sys->mvcc->clone_oldest_view(&purge_sys->view);
+  trx_sys->clone_oldest_view();
 
   purge_sys->view_active = true;
 
@@ -348,7 +348,7 @@ void trx_purge_add_update_undo_to_history(
                  undo_header + TRX_UNDO_HISTORY_NODE, mtr);
 
   if (update_rseg_history_len) {
-    os_atomic_increment_ulint(&trx_sys->rseg_history_len, n_added_logs);
+    trx_sys->rseg_history_len.fetch_add(n_added_logs);
     srv_wake_purge_thread_if_not_active();
   }
 
@@ -384,7 +384,7 @@ static void trx_purge_remove_log_hdr(trx_rsegf_t *rseg_hdr,
   flst_remove(rseg_hdr + TRX_RSEG_HISTORY, log_hdr + TRX_UNDO_HISTORY_NODE,
               mtr);
 
-  os_atomic_decrement_ulint(&trx_sys->rseg_history_len, 1);
+  trx_sys->rseg_history_len.fetch_sub(1);
 }
 
 /** Frees a rollback segment which is in the history list.
@@ -1648,8 +1648,6 @@ static void trx_purge_rseg_get_next_history_log(
     rseg->unlatch();
 
 #ifdef UNIV_DEBUG
-    trx_sys_mutex_enter();
-
     /* Add debug code to track history list corruption reported
     on the MySQL mailing list on Nov 9, 2004. The fut0lst.cc
     file-based list was corrupt. The prev node pointer was
@@ -1672,8 +1670,6 @@ static void trx_purge_rseg_get_next_history_log(
       ib::info(ER_IB_MSG_1180) << "2. Try increasing the number of purge"
                                   " threads to expedite purging of undo logs.";
     }
-
-    trx_sys_mutex_exit();
 #endif
     return;
   }
@@ -2205,7 +2201,7 @@ ulint trx_purge(ulint n_purge_threads, /*!< in: number of purge tasks
 
   purge_sys->view_active = false;
 
-  trx_sys->mvcc->clone_oldest_view(&purge_sys->view);
+  trx_sys->clone_oldest_view();
 
   purge_sys->view_active = true;
 

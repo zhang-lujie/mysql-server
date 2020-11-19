@@ -2180,7 +2180,7 @@ ibool page_validate(
     trx_id_t max_trx_id = page_get_max_trx_id(page);
     /* This will be 0 during recv_apply_hashed_log_recs(TRUE),
     because the transaction system has not been initialized yet */
-    trx_id_t sys_max_trx_id = trx_sys_get_max_trx_id();
+    trx_id_t sys_max_trx_id = trx_sys->get_max_trx_id();
 
     if (max_trx_id == 0 ||
         (sys_max_trx_id != 0 && max_trx_id > sys_max_trx_id)) {

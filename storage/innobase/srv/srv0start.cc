@@ -1347,7 +1347,7 @@ dberr_t srv_undo_tablespaces_upgrade() {
   rsegs and undo tablespaces they are in from being deleted.
   These transactions must be either committed or rolled back by
   the mysql server.*/
-  if (trx_sys->n_prepared_trx > 0) {
+  if (trx_sys->n_prepared_trx() > 0) {
     ib::warn(ER_IB_MSG_1094);
     return (DB_SUCCESS);
   }
@@ -2894,8 +2894,8 @@ void srv_dict_recover_on_restart() {
   that the data dictionary tables will be free of any locks.
   The data dictionary latch should guarantee that there is at
   most one data dictionary transaction active at a time. */
-  if (srv_force_recovery < SRV_FORCE_NO_TRX_UNDO && trx_sys_need_rollback()) {
-    trx_rollback_or_clean_recovered(FALSE);
+  if (srv_force_recovery < SRV_FORCE_NO_TRX_UNDO) {
+    trx_rollback_recovered(false);
   }
 
   /* Do after all DD transactions recovery, to get consistent metadata */
@@ -2976,8 +2976,7 @@ void srv_start_threads(bool bootstrap) {
     return;
   }
 
-  if (!bootstrap && srv_force_recovery < SRV_FORCE_NO_TRX_UNDO &&
-      trx_sys_need_rollback()) {
+  if (!bootstrap && srv_force_recovery < SRV_FORCE_NO_TRX_UNDO) {
     /* Rollback all recovered transactions that are
     not in committed nor in XA PREPARE state. */
     srv_threads.m_trx_recovery_rollback = os_thread_create(
@@ -3111,7 +3110,7 @@ void srv_pre_dd_shutdown() {
     prepared transactions and we don't want to lose them. */
 
     for (uint32_t count = 0;; ++count) {
-      const ulint total_trx = trx_sys_any_active_transactions();
+      const ulint total_trx = trx_sys->any_active_transactions();
 
       if (total_trx == 0) {
         break;
@@ -3202,7 +3201,7 @@ void srv_pre_dd_shutdown() {
 
   srv_is_being_shutdown = true;
 
-  ut_a(trx_sys_any_active_transactions() == 0);
+  ut_a(trx_sys->any_active_transactions() == 0);
 
   DBUG_EXECUTE_IF("wait_for_threads_in_pre_dd_shutdown",
                   srv_shutdown_background_threads(););
@@ -3479,7 +3478,7 @@ void srv_shutdown() {
 
   ut_a(!srv_is_being_started);
   ut_a(srv_is_being_shutdown);
-  ut_a(trx_sys_any_active_transactions() == 0);
+  ut_a(trx_sys->any_active_transactions() == 0);
 
   /* Ensure threads below have been stopped. */
   const auto threads_stopped_before_shutdown = {

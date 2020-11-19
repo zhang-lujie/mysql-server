@@ -2032,7 +2032,7 @@ int ha_innopart::sample_init(void *&scan_ctx, double sampling_percentage,
   auto trx = m_prebuilt->trx;
   innobase_register_trx(ht, ha_thd(), trx);
   trx_start_if_not_started_xa(trx, false);
-  trx_assign_read_view(trx);
+  trx->read_view.open(trx);
 
   /* Parallel read is not currently supported for sampling. */
   size_t n_threads = 1;
@@ -3180,7 +3180,7 @@ int ha_innopart::records(ha_rows *num_rows) {
       trx->mysql_n_tables_locked == 0 && !m_prebuilt->ins_sel_stmt &&
       n_threads > 1) {
     trx_start_if_not_started_xa(trx, false);
-    trx_assign_read_view(trx);
+    trx->read_view.open(trx);
 
     const auto first_used_partition = m_part_info->get_first_used_partition();
 

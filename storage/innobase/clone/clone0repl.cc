@@ -49,7 +49,7 @@ void Clone_persist_gtid::add(const Gtid_desc &gtid_desc) {
   if (!is_active() || gtid_table_persistor == nullptr) {
     return;
   }
-  ut_ad(trx_sys_mutex_own());
+
   /* Get active GTID list */
   auto &current_gtids = get_active_list();
 

@@ -385,16 +385,9 @@ static inline dtuple_t *row_build_low(ulint type, const dict_index_t *index,
   }
 
 #if defined UNIV_DEBUG || defined UNIV_BLOB_LIGHT_DEBUG
-  /* Some blob refs can be NULL during crash recovery before
-  trx_rollback_active() has completed execution, or when a concurrently
-  executing insert or update has committed the B-tree mini-transaction
-  but has not yet managed to restore the cursor position for writing
-  the big_rec. Note that the mini-transaction can be committed multiple
-  times, and the cursor restore can happen multiple times for single
-  insert or update statement.  */
   ut_a(!rec_offs_any_null_extern(rec, offsets) ||
-       trx_rw_is_active(row_get_rec_trx_id(rec, index, offsets), nullptr,
-                        false));
+       trx_sys->is_registered(current_trx(),
+                              row_get_rec_trx_id(rec, index, offsets)));
 #endif /* UNIV_DEBUG || UNIV_BLOB_LIGHT_DEBUG */
 
   if (type != ROW_COPY_POINTERS) {

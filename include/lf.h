@@ -159,6 +159,7 @@ struct LF_HASH;
 
 typedef uint lf_hash_func(const LF_HASH *, const uchar *, size_t);
 typedef void lf_hash_init_func(uchar *dst, const uchar *src);
+typedef bool lf_hash_walk_func(void *, void *);
 
 #define LF_HASH_UNIQUE 1
 #define MY_LF_ERRPTR ((void *)(intptr)1)
@@ -214,6 +215,8 @@ int lf_hash_insert(LF_HASH *hash, LF_PINS *pins, const void *data);
 void *lf_hash_search(LF_HASH *hash, LF_PINS *pins, const void *key,
                      uint keylen);
 int lf_hash_delete(LF_HASH *hash, LF_PINS *pins, const void *key, uint keylen);
+int lf_hash_iterate(LF_HASH *hash, LF_PINS *pins, const lf_hash_walk_func *callback,
+                    const void *argument);
 
 static inline LF_PINS *lf_hash_get_pins(LF_HASH *hash) {
   return lf_pinbox_get_pins(&hash->alloc.pinbox);

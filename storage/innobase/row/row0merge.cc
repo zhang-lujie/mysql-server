@@ -1915,19 +1915,19 @@ static MY_ATTRIBUTE((warn_unused_result)) dberr_t
       ONLINE_INDEX_COMPLETE state between the time
       the DML thread has updated the clustered index
       but has not yet accessed secondary index. */
-      ut_ad(MVCC::is_view_active(trx->read_view));
+      ut_ad(trx->read_view.is_open());
 
-      if (!trx->read_view->changes_visible(
+      if (!trx->read_view.changes_visible(
               row_get_rec_trx_id(rec, clust_index, offsets), old_table->name)) {
         rec_t *old_vers;
 
         row_vers_build_for_consistent_read(rec, &mtr, clust_index, &offsets,
-                                           trx->read_view, &row_heap, row_heap,
+                                           &trx->read_view, &row_heap, row_heap,
                                            &old_vers, nullptr, nullptr);
 
         rec = old_vers;
 
-        if (!rec) {
+        if (rec == nullptr) {
           continue;
         }
       }
