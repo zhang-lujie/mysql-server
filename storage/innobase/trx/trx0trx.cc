@@ -1244,6 +1244,7 @@ static void trx_start_low(
   read_view_open_now: */
 
   trx->no = TRX_ID_MAX;
+  trx->serialised = false;
 
   ut_a(ib_vector_is_empty(trx->lock.autoinc_locks));
   ut_a(trx->lock.table_locks.empty());
