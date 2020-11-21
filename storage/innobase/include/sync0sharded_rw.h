@@ -107,8 +107,8 @@ class Sharded_rw_lock {
   bool try_x_lock() {
     for (size_t shard_no = 0; shard_no < m_n_shards; ++shard_no) {
       if (!rw_lock_x_lock_nowait(&m_shards[shard_no])) {
-        while (0 < shard_no--) {
-          rw_lock_x_unlock(&m_shards[shard_no]);
+        while (0 < shard_no) {
+          rw_lock_x_unlock(&m_shards[--shard_no]);
         }
         return (false);
       }
