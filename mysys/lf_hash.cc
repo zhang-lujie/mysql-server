@@ -102,45 +102,34 @@ static inline T *SET_DELETED(T *ptr) {
 }
 
 /**
-  Walk the list, searching for an element or invoking a callback.
+  Walk the list, searching for an element.
 
   Search for hashnr/key/keylen in the list starting from 'head' and position the
   cursor. The list is ORDER by hashnr, key
 
   @param head         start walking the list from this node
-  @param cs           charset for comparing keys, nullptr if callback is used
+  @param cs           charset for comparing keys
   @param hashnr       hash number to searching for
-  @param key          key to search for OR data for the callback
-  @param keylen       length of the key to compare, 0 if callback is used
+  @param key          key to search for
+  @param keylen       length of the key to compare
   @param cursor       for returning the found element
   @param pins         see lf_alloc-pin.cc
-  @param callback     callback action, invoked for every element
 
   @note
     cursor is positioned in either case
     pins[0..2] are used, they are not removed on return
-    callback might see some elements twice (because of retries)
 
   @return
-    if find: 0 - not found
-             1 - found
-    if callback:
-             0 - ok
-             1 - error (callback returned true)
+    0 - not found
+    1 - found
 */
 static int my_lfind(std::atomic<LF_SLIST *> *head, CHARSET_INFO *cs,
                     uint32 hashnr, const uchar *key, size_t keylen,
-                    CURSOR *cursor, LF_PINS *pins,
-                    lf_hash_walk_func *callback) {
+                    CURSOR *cursor, LF_PINS *pins) {
   uint32 cur_hashnr;
   const uchar *cur_key;
   size_t cur_keylen;
   LF_SLIST *link;
-
-  /* should not be set both */
-  DBUG_ASSERT((cs == nullptr) || (callback == nullptr));
-  /* should not be set both */
-  DBUG_ASSERT((keylen == 0) || (callback == nullptr));
 
 retry:
   cursor->prev = head;
@@ -153,9 +142,11 @@ retry:
     if (unlikely(!cursor->curr)) {
       return 0; /* end of the list */
     }
+
     cur_hashnr = cursor->curr->hashnr;
     cur_keylen = cursor->curr->keylen;
     cur_key = cursor->curr->key;
+
     do {
       link = cursor->curr->link;
       cursor->next = PTR(link);
@@ -163,13 +154,7 @@ retry:
     } while (link != cursor->curr->link && LF_BACKOFF);
 
     if (!DELETED(link)) {
-      if (likely(callback != nullptr)) {
-        if ((cur_hashnr & 1) > 0 &&
-            callback(cursor->curr + 1,
-                     const_cast<void *>(static_cast<const void *>(key)))) {
-          return 1;
-        }
-      } else if (cur_hashnr >= hashnr) {
+      if (cur_hashnr >= hashnr) {
         int r = 1;
         if (cur_hashnr > hashnr ||
             (r = my_strnncoll(cs, cur_key, cur_keylen, key, keylen)) >= 0) {
@@ -198,23 +183,78 @@ retry:
   }
 }
 
-/*
-  DESCRIPTION
-    Search for hashnr/key/keylen in the list starting from 'head' and
-    position the cursor. The list is ORDER BY hashnr, key
+/**
+  Walk the list, invoking a callback.
 
-  RETURN
-    0 - not found
-    1 - found
+  @param head         start walking the list from this node
+  @param key          data for the callback
+  @param cursor       for returning the found element
+  @param pins         see lf_alloc-pin.cc
+  @param callback     callback action, invoked for every element
 
-  NOTE
+  @note
     cursor is positioned in either case
-    pins[0..2] are used, they are NOT removed on return
+    pins[0..2] are used, they are not removed on return
+    callback might see some elements twice (because of retries)
+
+  @return
+    0 - ok
+    1 - error (callback returned true)
 */
-static int my_lfind(std::atomic<LF_SLIST *> *head, CHARSET_INFO *cs,
-                    uint32 hashnr, const uchar *key, size_t keylen,
-                    CURSOR *cursor, LF_PINS *pins) {
-  return my_lfind(head, cs, hashnr, key, keylen, cursor, pins, nullptr);
+static int my_lfind(std::atomic<LF_SLIST *> *head, const uchar *key,
+                    CURSOR *cursor, LF_PINS *pins,
+                    lf_hash_walk_func *callback) {
+  uint32 cur_hashnr;
+  LF_SLIST *link;
+
+  DBUG_ASSERT(callback != nullptr);
+
+retry:
+  cursor->prev = head;
+  do /* PTR() isn't necessary below, head is a dummy node */
+  {
+    cursor->curr = (LF_SLIST *)(*cursor->prev);
+    lf_pin(pins, 1, cursor->curr);
+  } while (*cursor->prev != cursor->curr && LF_BACKOFF);
+  for (;;) {
+    if (unlikely(!cursor->curr)) {
+      return 0; /* end of the list */
+    }
+
+    cur_hashnr = cursor->curr->hashnr;
+
+    do {
+      link = cursor->curr->link;
+      cursor->next = PTR(link);
+      lf_pin(pins, 0, cursor->next);
+    } while (link != cursor->curr->link && LF_BACKOFF);
+
+    if (!DELETED(link)) {
+      if ((cur_hashnr & 1) > 0 &&
+          callback(cursor->curr + 1,
+                    const_cast<void *>(static_cast<const void *>(key)))) {
+        return 1;
+      }
+      cursor->prev = &(cursor->curr->link);
+      if (!(cur_hashnr & 1)) /* dummy node */
+        head = cursor->prev;
+      lf_pin(pins, 2, cursor->curr);
+    } else {
+      /*
+        we found a deleted node - be nice, help the other thread
+        and remove this deleted node
+      */
+      if (atomic_compare_exchange_strong(cursor->prev, &cursor->curr,
+                                         cursor->next)) {
+        lf_pinbox_free(pins, cursor->curr);
+      } else {
+        (void)LF_BACKOFF;
+        goto retry;
+      }
+    }
+    cursor->curr = cursor->next;
+    lf_pin(pins, 1, cursor->curr);
+  }
 }
 
 /**
@@ -641,7 +681,7 @@ int lf_hash_iterate(LF_HASH *hash, LF_PINS *pins, const lf_hash_walk_func *callb
     return 0;
   }
 
-  res = my_lfind(el, nullptr, 0, static_cast<const uchar *>(argument), 0, &cursor,
+  res = my_lfind(el, static_cast<const uchar *>(argument), &cursor,
                  pins, callback);
 
   lf_unpin(pins, 2);
