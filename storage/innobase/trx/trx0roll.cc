@@ -655,7 +655,7 @@ void trx_rollback_recovered(bool all) {
 
   /* Collect list of recovered ACTIVE transaction ids first. Once collected, no
   other thread is allowed to modify or remove these transactions from
-  rw_trx_hash.*/
+  rw_trx_hash. */
   trx_sys->rw_trx_hash.iterate_no_dups(
       reinterpret_cast<lf_hash_walk_func *>(trx_rollback_recovered_callback),
       &trx_list);

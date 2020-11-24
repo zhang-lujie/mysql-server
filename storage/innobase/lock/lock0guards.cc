@@ -31,7 +31,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "sync0rw.h"
 
 namespace locksys {
-
 /* Global_exclusive_latch_guard */
 
 Global_exclusive_latch_guard::Global_exclusive_latch_guard() {
@@ -110,5 +109,4 @@ Shard_latches_guard::~Shard_latches_guard() {
     mutex_exit(&m_shard_mutex_1);
   }
 }
-
 }  // namespace locksys

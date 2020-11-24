@@ -1049,7 +1049,6 @@ extern lock_sys_t *lock_sys;
 #include "lock0lock.ic"
 
 namespace locksys {
-
 /* OWNERSHIP TESTS */
 #ifdef UNIV_DEBUG
 
@@ -1090,7 +1089,6 @@ on whole lock_sys is held) by current thread
 bool owns_lock_shard(const lock_t *lock);
 
 #endif /* UNIV_DEBUG */
-
 }  // namespace locksys
 
 #include "lock0guards.h"

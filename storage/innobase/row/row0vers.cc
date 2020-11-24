@@ -295,7 +295,7 @@ static bool row_vers_find_matching(
  @return 0 if committed, else the active transaction id;
  NOTE that this function can return false positives but never false
  negatives. The caller must confirm all positive results by calling checking if
- the trx is still active.*/
+ the trx is still active. */
 UNIV_INLINE
 trx_t *row_vers_impl_x_locked_low(trx_t *caller_trx,
                                   const rec_t *const clust_rec,

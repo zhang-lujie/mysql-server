@@ -1156,7 +1156,7 @@ dberr_t row_lock_table_autoinc_for_mysql(
   Note: We peek at the value of the current owner without acquiring any latch,
   which is OK, because if the equality holds, it means we were granted the lock,
   and the only way table->autoinc_trx can subsequently change is by releasing
-  the lock, which can not happen concurrently with the thread running the trx.*/
+  the lock, which can not happen concurrently with the thread running the trx. */
   ut_ad(trx_can_be_handled_by_current_thread(trx));
   if (trx == table->autoinc_trx) {
     return (DB_SUCCESS);

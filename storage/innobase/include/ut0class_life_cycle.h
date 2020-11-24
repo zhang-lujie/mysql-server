@@ -31,7 +31,6 @@ Utilities related to class lifecycle. */
 #define ut0class_life_cycle_h
 
 namespace ut {
-
 /**
 A utility class which, if inherited from, prevents the descendant class
 from being copied, moved, or assigned.
@@ -46,7 +45,6 @@ class Non_copyable {
   Non_copyable() = default;
   ~Non_copyable() = default;  /// Protected non-virtual destructor
 };
-
 } /* namespace ut */
 
 #endif /* ut0class_life_cycle_h */

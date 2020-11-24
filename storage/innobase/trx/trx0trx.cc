@@ -2315,7 +2315,7 @@ state_ok:
 
 void trx_print_latched(FILE *f, const trx_t *trx, ulint max_query_len) {
   /* We need exclusive access to lock_sys for lock_number_of_rows_locked(),
-  and accessing trx->lock fields without trx->mutex.*/
+  and accessing trx->lock fields without trx->mutex. */
   ut_ad(locksys::owns_exclusive_global_latch());
 
   trx_print_low(f, trx, max_query_len, lock_number_of_rows_locked(&trx->lock),
@@ -2471,7 +2471,7 @@ static thread_local int32_t trx_latched_count = 0;
 static thread_local bool trx_allowed_two_latches = false;
 
 void trx_before_mutex_enter(const trx_t *trx, bool first_of_two) {
-  if (0 == trx_latched_count++) {
+  if (trx_latched_count++ == 0) {
     ut_a(trx_first_latched_trx == nullptr);
     trx_first_latched_trx = trx;
     if (first_of_two) {
@@ -2494,8 +2494,8 @@ void trx_before_mutex_enter(const trx_t *trx, bool first_of_two) {
   }
 }
 void trx_before_mutex_exit(const trx_t *trx) {
-  ut_a(0 < trx_latched_count);
-  if (0 == --trx_latched_count) {
+  ut_a(trx_latched_count > 0);
+  if (--trx_latched_count == 0) {
     ut_a(trx_first_latched_trx == trx);
     trx_first_latched_trx = nullptr;
     trx_allowed_two_latches = false;

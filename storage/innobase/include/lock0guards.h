@@ -141,7 +141,6 @@ class Shard_latches_guard {
   /** The ordering on shard mutexes used to avoid deadlocks */
   static constexpr std::less<Lock_mutex *> MUTEX_ORDER{};
 };
-
 }  // namespace locksys
 
 #endif /* lock0guards_h */

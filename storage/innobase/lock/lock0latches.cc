@@ -31,7 +31,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "lock0priv.h"
 
 namespace locksys {
-
 size_t Latches::Page_shards::get_shard(const page_id_t &page_id) {
   /* We always use lock_rec_hash regardless of the exact type of the lock.
   It may happen that the lock is a predicate lock, in which case,
@@ -103,5 +102,4 @@ Latches::Table_shards::~Table_shards() {
     mutex_destroy(mutexes + i);
   }
 }
-
 }  // namespace locksys

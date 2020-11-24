@@ -504,7 +504,7 @@ class Rec_offsets : private ut::Non_copyable {
   mem_heap_t *m_heap{nullptr};
 
   /** Buffer with size large enough to handle common cases without having to use
-  heap. This is the initial value of m_offsets.*/
+  heap. This is the initial value of m_offsets. */
   ulint m_preallocated_buffer[REC_OFFS_NORMAL_SIZE];
 
   /* Initially points to m_preallocated_buffer (which is uninitialized memory).

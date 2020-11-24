@@ -102,12 +102,12 @@ class Sharded_rw_lock {
   /**
   Tries to obtain exclusive latch - similar to x_lock(), but non-blocking, and
   thus can fail.
-  @return true iff succeeded to acquire the exclusive latch
+  @return true if succeeded to acquire the exclusive latch
   */
   bool try_x_lock() {
     for (size_t shard_no = 0; shard_no < m_n_shards; ++shard_no) {
       if (!rw_lock_x_lock_nowait(&m_shards[shard_no])) {
-        while (0 < shard_no) {
+        while (shard_no > 0) {
           rw_lock_x_unlock(&m_shards[--shard_no]);
         }
         return (false);
