@@ -65,6 +65,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ibuf0ibuf.h"
 #ifndef UNIV_HOTBACKUP
 #include "lock0lock.h"
+#include "lock0guards.h"
 #include "log0recv.h"
 #include "mem0mem.h"
 #include "os0proc.h"

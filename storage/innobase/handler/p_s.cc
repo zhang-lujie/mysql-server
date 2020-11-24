@@ -36,6 +36,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "lock0iter.h"
 #include "lock0lock.h"
+#include "lock0guards.h"
 #include "sql_table.h"
 #include "table.h"
 #include "trx0i_s.h"

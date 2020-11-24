@@ -1203,7 +1203,9 @@ struct trx_t {
 
   bool allow_semi_consistent() const { return (skip_gap_locks()); }
 
-  bool is_referenced() { return (n_ref.load(std::memory_order_relaxed) > 0); }
+  bool is_referenced() const {
+    return (n_ref.load(std::memory_order_relaxed) > 0);
+  }
 
   void reference() {
     int32_t old_n_ref = n_ref.fetch_add(1, std::memory_order_relaxed);

@@ -47,6 +47,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "lob0lob.h"
 #include "lock0lock.h"
+#include "lock0guards.h"
 #include "log0log.h"
 #include "m_string.h"
 #include "mach0data.h"

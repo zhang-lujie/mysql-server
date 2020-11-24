@@ -44,6 +44,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "fsp0sysspace.h"
 #include "ha_prototypes.h"
 #include "lock0lock.h"
+#include "lock0guards.h"
 #include "log0log.h"
 #include "os0proc.h"
 #include "que0que.h"
@@ -1311,7 +1312,6 @@ static void trx_start_low(
  @return true if the transaction number was added to the serialisation_list. */
 static void trx_serialise(
     trx_t *trx,                         /*!< in/out: transaction */
-    mtr_t *mtr,                         /*!< in/out: mini-transaction */
     trx_undo_ptr_t *redo_rseg_undo_ptr, /*!< in/out: Set trx
                                         serialisation number in
                                         referred undo rseg. */
@@ -1444,7 +1444,7 @@ static void trx_write_serialisation_history(
                                                    : nullptr;
 
     /* Will set trx->no and will add rseg to purge queue. */
-    trx_serialise(trx, mtr, redo_rseg_undo_ptr, temp_rseg_undo_ptr);
+    trx_serialise(trx, redo_rseg_undo_ptr, temp_rseg_undo_ptr);
 
     /* It is not necessary to obtain trx->undo_mutex here because
     only a single OS thread is allowed to do the transaction commit

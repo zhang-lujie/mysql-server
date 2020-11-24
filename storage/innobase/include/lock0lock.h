@@ -1091,6 +1091,4 @@ bool owns_lock_shard(const lock_t *lock);
 #endif /* UNIV_DEBUG */
 }  // namespace locksys
 
-#include "lock0guards.h"
-
 #endif
