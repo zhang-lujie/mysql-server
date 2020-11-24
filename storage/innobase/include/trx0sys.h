@@ -348,7 +348,7 @@ class Space_Ids : public std::vector<space_id_t, ut_allocator<space_id_t>> {
 trx_t *current_trx();
 
 struct rw_trx_hash_element_t {
-  rw_trx_hash_element_t() : trx(nullptr) {
+  rw_trx_hash_element_t() : no(TRX_ID_MAX), trx(nullptr) {
     mutex_create(LATCH_ID_RW_TRX_HASH_ELEMENT, &mutex);
   }
 
@@ -622,7 +622,7 @@ struct trx_sys_t {
 
   @return maximum currently allocated trx id; will be stale after the next call
   to trx_sys.assign_new_trx_no */
-  trx_id_t get_max_trx_id() {
+  trx_id_t get_max_trx_id() const {
     return max_trx_id.load(std::memory_order_relaxed);
   }
 
@@ -805,7 +805,7 @@ struct trx_sys_t {
   }
 
   struct snapshot_ids_arg {
-    snapshot_ids_arg(trx_ids_t *_ids) : ids(_ids), id(0), no(0) {}
+    explicit snapshot_ids_arg(trx_ids_t *_ids) : ids(_ids), id(0), no(0) {}
 
     trx_ids_t *ids;
     trx_id_t id;
@@ -825,7 +825,7 @@ struct trx_sys_t {
   }
 
   /** Get for rw_trx_hash_version, must issue ACQUIRE memory barrier. */
-  trx_id_t get_rw_trx_hash_version() {
+  trx_id_t get_rw_trx_hash_version() const {
     return rw_trx_hash_version.load(std::memory_order_acquire);
   }
 

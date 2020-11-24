@@ -46,6 +46,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "gis0rtree.h"
 #include "ibuf0ibuf.h"
 #include "lock0lock.h"
+#include "lock0guards.h"
 #include "my_dbug.h"
 #include "page0page.h"
 #include "page0zip.h"

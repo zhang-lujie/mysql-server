@@ -38,6 +38,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "lock0lock.h"
 #include "lock0priv.h"
+#include "lock0guards.h"
 #include "os0thread-create.h"
 #include "que0que.h"
 #include "row0mysql.h"
@@ -688,7 +689,7 @@ static void lock_wait_rollback_deadlock_victim(trx_t *chosen_victim) {
   /* The call to lock_cancel_waiting_and_release requires exclusive latch on
   whole lock_sys.
   Also, we need to latch the shard containing wait_lock to read it and access
-  the lock itself.*/
+  the lock itself. */
   ut_ad(locksys::owns_exclusive_global_latch());
   trx_mutex_enter(chosen_victim);
   chosen_victim->lock.was_chosen_as_deadlock_victim = true;

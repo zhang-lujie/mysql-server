@@ -48,6 +48,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ha_prototypes.h"
 #include "lock0lock.h"
 #include "lock0priv.h"
+#include "lock0guards.h"
 #include "pars0pars.h"
 #include "row0mysql.h"
 #include "row0sel.h"

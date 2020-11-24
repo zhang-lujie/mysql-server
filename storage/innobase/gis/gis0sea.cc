@@ -44,6 +44,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "btr0sea.h"
 #include "ibuf0ibuf.h"
 #include "lock0lock.h"
+#include "lock0guards.h"
 #include "rem0cmp.h"
 #include "srv0mon.h"
 #include "sync0sync.h"

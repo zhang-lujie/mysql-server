@@ -52,6 +52,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "hash0hash.h"
 #include "lock0iter.h"
 #include "lock0lock.h"
+#include "lock0guards.h"
 #include "mem0mem.h"
 #include "mysql/plugin.h"
 #include "page0page.h"
