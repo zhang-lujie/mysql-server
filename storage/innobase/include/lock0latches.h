@@ -119,7 +119,7 @@ class Latches {
     static constexpr size_t NOT_IN_USE = std::numeric_limits<size_t>::max();
 
     /** The id of the rw_lock's shard which this thread has s-latched, or
-    NOT_IN_USE if it has not s-latched any*/
+    NOT_IN_USE if it has not s-latched any */
     static thread_local size_t m_shard_id;
 
    public:

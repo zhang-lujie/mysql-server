@@ -32,7 +32,6 @@ Utilities related to CPU cache. */
 
 #include "ut0ut.h"
 namespace ut {
-
 /** CPU cache line size */
 #if (defined(__powerpc__)) || (defined(__aarch64__))
 constexpr size_t INNODB_CACHE_LINE_SIZE = 128;

@@ -1830,9 +1830,7 @@ void lock_make_trx_hit_list(trx_t *hp_trx, hit_list_t &hit_list) {
   check if this transaction is waiting for a lock at all. It's unsafe to read
   hp->lock.wait_lock without latching whole lock_sys as it might temporarily
   change to NULL during a concurrent B-tree reorganization, even though the
-  trx actually is still waiting.
-  TBD: Is it safe to use hp_trx->lock.que_state == TRX_QUE_LOCK_WAIT given that
-  que_state is not atomic, and writes to it happen without trx->mutex ? */
+  trx actually is still waiting. */
   const bool is_waiting = (hp_trx->lock.blocking_trx.load() != nullptr);
   trx_mutex_exit(hp_trx);
   if (!is_waiting) {
@@ -4055,7 +4053,7 @@ merged or split, or due to implicit-to-explicit conversion).
 It is called during XA prepare to release locks early.
 @param[in,out]	trx		transaction
 @param[in]	only_gap	release only GAP locks
-@return true if and only if it succeeded to do the job*/
+@return true if and only if it succeeded to do the job */
 static bool try_release_read_locks_in_s_mode(trx_t *trx, bool only_gap) {
   /* In order to access trx->lock.trx_locks safely we need to hold trx->mutex.
   So, conceptually we'd love to hold trx->mutex while iterating through
@@ -4093,7 +4091,7 @@ static bool try_release_read_locks_in_s_mode(trx_t *trx, bool only_gap) {
     if (lock_get_type_low(lock) == LOCK_REC) {
       /* Following call temporarily releases trx->mutex */
       if (!try_relatch_trx_and_shard_and_do(
-              lock, [=]() { lock_release_read_lock(lock, only_gap); })) {
+          lock, [=]() { lock_release_read_lock(lock, only_gap); })) {
         /* Someone has modified the list while we were re-acquiring the latches
         so we need to start over again. */
         return false;
@@ -4698,7 +4696,7 @@ class TrxLockIterator {
 @param[in]	trx	transaction */
 void lock_trx_print_wait_and_mvcc_state(FILE *file, const trx_t *trx) {
   /* We require exclusive lock_sys access so that trx->lock.wait_lock is
-  not being modified, and to access trx->lock.wait_started without trx->mutex.*/
+  not being modified, and to access trx->lock.wait_started without trx->mutex. */
   ut_ad(locksys::owns_exclusive_global_latch());
   fprintf(file, "---");
 
@@ -5062,7 +5060,7 @@ function_exit:
 }
 
 static bool lock_validate_table_locks_callback(rw_trx_hash_element_t *element,
-                                               void * /*unused*/) {
+                                               void * /* unused */) {
   mutex_enter(&element->mutex);
   trx_t *trx = element->trx;
   if (trx != nullptr) {

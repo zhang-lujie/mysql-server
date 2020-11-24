@@ -252,7 +252,7 @@ in time are seen in the view.
 
 View becomes visible to purge thread.
 
-@param[in,out] trx transaction*/
+@param[in,out] trx transaction */
 void ReadView::open(trx_t *trx) {
   ut_ad(this == &trx->read_view);
   switch (m_state.load(std::memory_order_relaxed)) {

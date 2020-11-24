@@ -873,7 +873,7 @@ No need to call ReadView::close(). The caller owns the view that is passed in.
 This function is called by purge thread to determine whether it should purge the
 delete marked record or not. */
 void trx_sys_t::clone_oldest_view(ReadView *view) {
-  if (view == NULL) {
+  if (view == nullptr) {
       purge_sys->view.snapshot(nullptr);
   }
   mutex_enter(&mutex);
@@ -886,7 +886,7 @@ void trx_sys_t::clone_oldest_view(ReadView *view) {
     }
 
     if (state == READ_VIEW_STATE_OPEN) {
-      if (view == NULL) {
+      if (view == nullptr) {
           purge_sys->view.copy(trx->read_view);
       } else {
           view->copy(trx->read_view);
@@ -930,8 +930,6 @@ ulint trx_sys_t::n_prepared_trx() {
 }
 
 trx_id_t trx_sys_t::get_new_trx_id_no_refresh() {
-  /* TODO wcy: why is this function called when doing undo? */
-
   /* VERY important: after the database is started, max_trx_id value is
   divisible by TRX_SYS_TRX_ID_WRITE_MARGIN, and the following if
   will evaluate to TRUE when this function is first time called,

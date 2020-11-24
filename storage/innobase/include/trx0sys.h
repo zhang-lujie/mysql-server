@@ -768,7 +768,7 @@ struct trx_sys_t {
   No need to call ReadView::close(). The caller owns the view that is passed in.
   This function is called by purge thread to determine whether it should purge
   the delete marked record or not. */
-  void clone_oldest_view(ReadView *view = NULL);
+  void clone_oldest_view(ReadView *view = nullptr);
 
   /** @return the number of active views. */
   size_t view_count() const {
