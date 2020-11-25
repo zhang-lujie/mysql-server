@@ -812,7 +812,7 @@ struct trx_sys_t {
     trx_id_t no;
   };
 
-  static bool copy_one_id(rw_trx_hash_element_t *element,
+  static bool copy_one_id(const rw_trx_hash_element_t *element,
                           snapshot_ids_arg *arg) {
     if (element->id < arg->id) {
       trx_id_t no = element->no.load(std::memory_order_relaxed);
