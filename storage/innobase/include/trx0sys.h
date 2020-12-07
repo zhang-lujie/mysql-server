@@ -449,7 +449,7 @@ class rw_trx_hash_t {
 
   Since pins are not allowed to be transferred to another thread,
   initialisation thread calls this for recovered transactions. */
-  void put_pins(trx_t *trx);
+  void put_pins(trx_t *trx) const;
 
   /** Finds trx object in lock-free hash with given id.
 
@@ -785,7 +785,7 @@ struct trx_sys_t {
     return count;
   }
 
-  ulint n_prepared_trx(); /*!< Return number of transactions currently
+  ulint n_prepared_trx() const; /*!< Return number of transactions currently
                           in the XA PREPARED state. */
   bool found_prepared_trx; /*!< True if XA PREPARED transactions are found. */
 
