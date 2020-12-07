@@ -637,7 +637,7 @@ called earlier if thread is expected not to use rw_trx_hash.
 
 Since pins are not allowed to be transferred to another thread,
 initialisation thread calls this for recovered transactions. */
-void rw_trx_hash_t::put_pins(trx_t *trx) {
+void rw_trx_hash_t::put_pins(trx_t *trx) const {
   if (trx->rw_trx_hash_pins != nullptr) {
     lf_hash_put_pins(trx->rw_trx_hash_pins);
     trx->rw_trx_hash_pins = nullptr;
@@ -919,7 +919,7 @@ static bool trx_sys_found_prepared_trx_callback(
 }
 
 /** @return true if found prepared transaction(s). */
-ulint trx_sys_t::n_prepared_trx() {
+ulint trx_sys_t::n_prepared_trx() const {
   trx_sys_found_prepared_trx_callback_arg arg = {0};
 
   trx_sys->rw_trx_hash.iterate(reinterpret_cast<lf_hash_walk_func *>(
