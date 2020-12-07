@@ -858,7 +858,8 @@ ulint trx_sys_t::any_active_transactions() {
     }
 
     if (srv_force_recovery >= SRV_FORCE_NO_TRX_UNDO) {
-      if (trx->state == TRX_STATE_ACTIVE && trx->is_recovered) {
+      if (trx->state == TRX_STATE_ACTIVE && trx->is_recovered &&
+          total_trx > 0) {
         total_trx--;
       }
     }
