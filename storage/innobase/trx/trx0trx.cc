@@ -489,40 +489,11 @@ static trx_t *trx_create_low() {
 /**
 Release a trx_t instance back to the pool.
 @param trx the instance to release. */
-void trx_free(trx_t *&trx) {
+static void trx_free(trx_t *&trx) {
   ut_ad(!trx->declared_to_be_inside_innodb);
   ut_ad(trx->n_mysql_tables_in_use == 0);
   ut_ad(trx->mysql_n_tables_locked == 0);
   ut_ad(!trx->internal);
-
-  if (trx->declared_to_be_inside_innodb) {
-    ib::error(ER_IB_MSG_1270)
-        << "Freeing a trx (" << trx << ", " << trx_get_id_for_print(trx)
-        << ") which is declared"
-           " to be processing inside InnoDB";
-
-    trx_print(stderr, trx, 600);
-    putc('\n', stderr);
-
-    /* This is an error but not a fatal error. We must keep the coutners like
-    srv_conc.n_active accurate. */
-    srv_conc_force_exit_innodb(trx);
-  }
-
-  if (trx->n_mysql_tables_in_use > 0 || trx->mysql_n_tables_locked > 0) {
-    ib::error(ER_IB_MSG_1270)
-        << "MySQL is freeing a thd though"
-           " trx->n_mysql_tables_in_use is "
-        << trx->n_mysql_tables_in_use << " and trx->mysql_n_tables_locked is "
-        << trx->mysql_n_tables_locked << ".";
-
-    trx_print(stderr, trx, 600);
-    ut_print_buf(stderr, trx, sizeof(trx_t));
-    putc('\n', stderr);
-  }
-
-  trx->dict_operation = TRX_DICT_OP_NONE;
-  assert_trx_is_inactive(trx);
 
   trx_sys->deregister_trx(trx);
   assert_trx_is_free(trx);
@@ -603,6 +574,16 @@ static void trx_validate_state_before_free(trx_t *trx) {
 
   trx->dict_operation = TRX_DICT_OP_NONE;
   assert_trx_is_inactive(trx);
+}
+
+/** Free and initialize a transaction object instantiated during recovery.
+@param[in,out]	trx	transaction object to free and initialize */
+void trx_free_resurrected(trx_t *trx) {
+  trx_validate_state_before_free(trx);
+
+  trx_init(trx);
+
+  trx_free(trx);
 }
 
 /** Free a transaction that was allocated by background or user threads.
@@ -1985,6 +1966,32 @@ void trx_commit(trx_t *trx) /*!< in/out: transaction */
   }
 
   trx_commit_low(trx, mtr);
+}
+
+/** Cleans up a transaction at database startup. The cleanup is needed if
+ the transaction already got to the middle of a commit when the database
+ crashed, and we cannot roll it back. */
+void trx_cleanup_at_db_startup(trx_t *trx) /*!< in: transaction */
+{
+  ut_ad(trx->is_recovered);
+
+  /* Cleanup any durable undo logs in non-temporary rollback segments.
+  At database start-up there are no active transactions recorded in
+  any rollback segments in the temporary tablespace because all those
+  changes are all lost on restart. */
+  if (trx->rsegs.m_redo.insert_undo != nullptr) {
+    trx_undo_insert_cleanup(&trx->rsegs.m_redo, false);
+  }
+
+  memset(&trx->rsegs, 0x0, sizeof(trx->rsegs));
+  trx->undo_no = 0;
+  trx->undo_rseg_space = 0;
+  trx->last_sql_stat_start.least_undo_no = 0;
+
+  trx_sys->deregister_rw(trx);
+
+  ut_ad(trx->is_recovered);
+  trx->state = TRX_STATE_NOT_STARTED;
 }
 
 /** Prepares a transaction for commit/rollback. */
