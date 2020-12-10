@@ -2895,7 +2895,7 @@ void srv_dict_recover_on_restart() {
   The data dictionary latch should guarantee that there is at
   most one data dictionary transaction active at a time. */
   if (srv_force_recovery < SRV_FORCE_NO_TRX_UNDO) {
-    trx_rollback_recovered(false);
+    trx_rollback_or_clean_recovered(false);
   }
 
   /* Do after all DD transactions recovery, to get consistent metadata */

@@ -620,13 +620,13 @@ static void trx_rollback_active(trx_t *trx) /*!< in/out: transaction */
   trx_roll_crash_recv_trx = nullptr;
 }
 
-static bool trx_rollback_recovered_callback(rw_trx_hash_element_t *element,
+static bool trx_rollback_or_clean_recovered_callback(rw_trx_hash_element_t *element,
                                             std::vector<trx_t *> *trx_list) {
   mutex_enter(&element->mutex);
   trx_t *trx = element->trx;
   if (trx != nullptr) {
     mutex_enter(&trx->mutex);
-    if (trx->is_recovered && trx_state_eq(trx, TRX_STATE_ACTIVE)) {
+    if (trx->is_recovered && (trx_state_eq(trx, TRX_STATE_ACTIVE) || trx_state_eq(trx, TRX_STATE_COMMITTED_IN_MEMORY))) {
       ut_ad(trx != trx_dummy_sess->trx);
       trx_list->push_back(trx);
     }
@@ -636,19 +636,14 @@ static bool trx_rollback_recovered_callback(rw_trx_hash_element_t *element,
   return false;
 }
 
-/** Rollback any incomplete transactions which were encountered in crash
- recovery.
-
- If the transaction already was committed, then we cleanup a possible insert
- undo log. If the transaction was not yet committed, then we roll it back.
-
- Note: For XA recovered transactions, we rely on MySQL to do rollback. They
- will be in TRX_STATE_PREPARED state. If the server is shutdown and they are
- still lingering in trx_sys_t::trx_list then the shutdown will hang.
-
- @param [in] all true=roll back all recovered active transactions;
-                 fasle=roll back any incomplete dictionary transaction */
-void trx_rollback_recovered(bool all) {
+/** Rollback or clean up any incomplete transactions which were
+ encountered in crash recovery.  If the transaction already was
+ committed, then we clean up a possible insert undo log. If the
+ transaction was not yet committed, then we roll it back. */
+void trx_rollback_or_clean_recovered(
+    ibool all) /*!< in: FALSE=roll back dictionary transactions;
+               TRUE=roll back all non-PREPARED transactions */
+{
   std::vector<trx_t *> trx_list;
 
   ut_a(srv_force_recovery < SRV_FORCE_NO_TRX_UNDO);
@@ -657,7 +652,7 @@ void trx_rollback_recovered(bool all) {
   other thread is allowed to modify or remove these transactions from
   rw_trx_hash. */
   trx_sys->rw_trx_hash.iterate_no_dups(
-      reinterpret_cast<lf_hash_walk_func *>(trx_rollback_recovered_callback),
+      reinterpret_cast<lf_hash_walk_func *>(trx_rollback_or_clean_recovered_callback),
       &trx_list);
 
   while (!trx_list.empty()) {
@@ -667,19 +662,31 @@ void trx_rollback_recovered(bool all) {
 #ifdef UNIV_DEBUG
     ut_ad(trx != nullptr);
     trx_mutex_enter(trx);
-    ut_ad(trx->is_recovered && trx_state_eq(trx, TRX_STATE_ACTIVE));
+    ut_ad(trx->is_recovered && (trx_state_eq(trx, TRX_STATE_ACTIVE) || trx_state_eq(trx, TRX_STATE_COMMITTED_IN_MEMORY)));
     trx_mutex_exit(trx);
 #endif /* UNIV_DEBUG */
 
-    if (all || trx_get_dict_operation(trx) != TRX_DICT_OP_NONE) {
-      trx_rollback_active(trx);
-      if (trx->error_state != DB_SUCCESS) {
-        trx->error_state = DB_SUCCESS;
-        trx_sys->deregister_rw(trx);
-        trx_free_at_shutdown(trx);
-      } else {
-        trx_free(trx);
-      }
+    switch (trx->state) {
+      case TRX_STATE_COMMITTED_IN_MEMORY:
+        ib::info(ER_IB_MSG_1188)
+            << "Cleaning up trx with id " << trx_get_id_for_print(trx);
+        trx_cleanup_at_db_startup(trx);
+        trx_free_resurrected(trx);
+        break;
+      case TRX_STATE_ACTIVE:
+        if (all || trx_get_dict_operation(trx) != TRX_DICT_OP_NONE) {
+          trx_rollback_active(trx);
+          if (trx->error_state != DB_SUCCESS) {
+            trx->error_state = DB_SUCCESS;
+            trx_sys->deregister_rw(trx);
+            trx_free_at_shutdown(trx);
+          } else {
+            trx_free_for_background(trx);
+          }
+        }
+        break;
+      default:
+        break;
     }
   }
 }
@@ -702,7 +709,7 @@ void trx_recovery_rollback_thread() {
   if (trx_sys->rw_trx_hash.size() > 0) {
     ib::info(ER_IB_MSG_1189) << "Starting in background the rollback"
                                 " of uncommitted transactions";
-    trx_rollback_recovered(true);
+    trx_rollback_or_clean_recovered(true);
     ib::info(ER_IB_MSG_1190) << "Rollback of non-prepared transactions"
                                 " completed";
   }
