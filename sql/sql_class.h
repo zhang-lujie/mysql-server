@@ -561,6 +561,9 @@ typedef struct system_variables
   char *track_sysvars_ptr;
   my_bool session_track_schema;
   my_bool session_track_state_change;
+
+  uint  threadpool_high_prio_tickets;
+  ulong threadpool_high_prio_mode;
   ulong   session_track_transaction_info;
   /**
     Used for the verbosity of SHOW CREATE TABLE. Currently used for displaying
@@ -1612,6 +1615,8 @@ public:
   Query_cache_tls query_cache_tls;
   /** Aditional network instrumentation for the server only. */
   NET_SERVER m_net_server_extension;
+  /** Thread scheduler callbacks for this connection */
+  THD_event_functions *scheduler;
   /**
     Hash for user variables.
     User variables are per session,
@@ -1987,6 +1992,18 @@ public:
 
   /* <> 0 if we are inside of trigger or stored function. */
   uint in_sub_stmt;
+
+  /* Do not set socket timeouts for wait_timeout (used with threadpool) */
+  bool skip_wait_timeout;
+
+  inline ulong get_wait_timeout(void) const
+  {
+    // if (in_active_multi_stmt_transaction()
+    //     && kill_idle_transaction_timeout > 0
+    //     && kill_idle_transaction_timeout < variables.net_wait_timeout)
+    //   return kill_idle_transaction_timeout;
+    return variables.net_wait_timeout;
+  }
 
   /**
     Used by fill_status() to avoid acquiring LOCK_status mutex twice
@@ -3081,6 +3098,7 @@ public:
   {
     mysql_mutex_lock(&LOCK_thd_data);
     active_vio = vio;
+    vio_set_thread_id(vio, pthread_self());
     mysql_mutex_unlock(&LOCK_thd_data);
   }
 
@@ -4191,7 +4209,7 @@ public:
     *p_db_length= m_db.length;
     return false;
   }
-  thd_scheduler scheduler;
+  thd_scheduler event_scheduler;
 
 public:
   /**
