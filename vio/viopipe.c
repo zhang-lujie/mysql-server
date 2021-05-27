@@ -99,7 +99,7 @@ my_bool vio_is_connected_pipe(Vio *vio)
 }
 
 
-int vio_shutdown_pipe(Vio *vio)
+int vio_shutdown_pipe(Vio *vio, int how)
 {
   BOOL ret= FALSE;
   DBUG_ENTER("vio_shutdown_pipe");

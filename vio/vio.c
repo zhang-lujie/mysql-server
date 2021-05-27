@@ -149,6 +149,7 @@ static void vio_init(Vio *vio, enum enum_vio_type type,
     vio->should_retry	=vio_should_retry;
     vio->was_timeout    =vio_was_timeout;
     vio->vioshutdown	=vio_ssl_shutdown;
+    vio->viocancel      =vio_cancel;
     vio->peer_addr	=vio_peer_addr;
     vio->io_wait        =vio_io_wait;
     vio->is_connected   =vio_is_connected;
@@ -166,6 +167,7 @@ static void vio_init(Vio *vio, enum enum_vio_type type,
   vio->should_retry     =vio_should_retry;
   vio->was_timeout      =vio_was_timeout;
   vio->vioshutdown      =vio_shutdown;
+  vio->viocancel        =vio_cancel;
   vio->peer_addr        =vio_peer_addr;
   vio->io_wait          =vio_io_wait;
   vio->is_connected     =vio_is_connected;
@@ -252,7 +254,7 @@ my_bool vio_reset(Vio* vio, enum enum_vio_type type,
     */
     if (sd != mysql_socket_getfd(vio->mysql_socket))
       if (vio->inactive == FALSE)
-        vio->vioshutdown(vio);
+        vio->vioshutdown(vio, SHUT_RDWR);
 
     my_free(vio->read_buffer);
 
@@ -396,7 +398,7 @@ void vio_delete(Vio* vio)
     return; /* It must be safe to delete null pointers. */
 
   if (vio->inactive == FALSE)
-    vio->vioshutdown(vio);
+    vio->vioshutdown(vio, SHUT_RDWR);
   my_free(vio->read_buffer);
   my_free(vio);
 }
