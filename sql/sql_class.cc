@@ -2190,8 +2190,6 @@ bool THD::store_globals()
 #endif
   real_id= my_thread_self();                      // For debugging
 
-  vio_set_thread_id(net.vio, real_id);
-
   return false;
 }
 
