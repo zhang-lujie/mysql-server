@@ -235,11 +235,6 @@ public:
     mysql_socket_shutdown(m_connect_sock, SHUT_RDWR);
     mysql_socket_close(m_connect_sock);
   }
-
-  virtual int get_socket_fd() const
-  {
-    return mysql_socket_getfd(m_connect_sock);
-  }
 };
 
 
