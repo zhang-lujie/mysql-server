@@ -186,9 +186,11 @@ bool Connection_handler_manager::init()
   case SCHEDULER_NO_THREADS:
     connection_handler= new (std::nothrow) One_thread_connection_handler();
     break;
+#ifdef HAVE_POOL_OF_THREADS
   case SCHEDULER_THREAD_POOL:
     connection_handler= new (std::nothrow) Thread_pool_connection_handler();
     break;
+#endif
   default:
     DBUG_ASSERT(false);
   }
