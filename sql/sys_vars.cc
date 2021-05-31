@@ -4100,14 +4100,10 @@ static Sys_var_ulong Sys_thread_cache_size(
 
 static bool fix_tp_max_threads(sys_var *, THD *, enum_var_type)
 {
-#ifdef _WIN32
-  tp_set_max_threads(threadpool_max_threads);
-#endif
   return false;
 }
 
-
-#ifndef  _WIN32
+#ifndef _WIN32
 static bool fix_threadpool_size(sys_var*, THD*, enum_var_type)
 {
   tp_set_threadpool_size(threadpool_size);

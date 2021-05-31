@@ -132,4 +132,3 @@ int vio_cancel_pipe(Vio *vio, int how)
   DBUG_RETURN(0);
 }
 
-#endif

@@ -251,6 +251,7 @@ SET(SQL_SHARED_SOURCES
 )
 
 IF(WIN32)
+ # not support WIN32 threadpool
 ELSE()
  SET(SQL_SHARED_SOURCES ${SQL_SHARED_SOURCES} threadpool_unix.cc)
 ENDIF()

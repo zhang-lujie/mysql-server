@@ -174,7 +174,6 @@ static PSI_cond_info all_conn_manager_conds[]=
 
 bool Connection_handler_manager::init()
 {
-  // This is a static member function.
   Per_thread_connection_handler::init();
 
   Connection_handler *connection_handler= NULL;

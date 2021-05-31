@@ -72,8 +72,6 @@ extern TP_STATISTICS tp_stats;
 
 
 /* Functions to set threadpool parameters */
-extern void tp_set_min_threads(uint val);
-extern void tp_set_max_threads(uint val);
 extern void tp_set_threadpool_size(uint val);
 extern void tp_set_threadpool_stall_limit(uint val);
 

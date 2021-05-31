@@ -28,7 +28,6 @@
 #include "sql_parse.h"                   // do_command
 #include "sql_thd_internal_api.h"        // thd_set_thread_stack
 #include "log.h"                         // Error_log_throttle
-#include "debug_sync.h"
 
 
 // Initialize static members

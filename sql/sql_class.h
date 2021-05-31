@@ -564,6 +564,7 @@ typedef struct system_variables
 
   uint  threadpool_high_prio_tickets;
   ulong threadpool_high_prio_mode;
+
   ulong   session_track_transaction_info;
   /**
     Used for the verbosity of SHOW CREATE TABLE. Currently used for displaying
@@ -1998,10 +1999,6 @@ public:
 
   inline ulong get_wait_timeout(void) const
   {
-    // if (in_active_multi_stmt_transaction()
-    //     && kill_idle_transaction_timeout > 0
-    //     && kill_idle_transaction_timeout < variables.net_wait_timeout)
-    //   return kill_idle_transaction_timeout;
     return variables.net_wait_timeout;
   }
 

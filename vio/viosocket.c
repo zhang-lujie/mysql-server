@@ -526,7 +526,7 @@ int vio_cancel(Vio * vio, int how)
     DBUG_ASSERT(mysql_socket_getfd(vio->mysql_socket) >= 0);
     if (mysql_socket_shutdown(vio->mysql_socket, how))
       r= -1;
-#ifdef  _WIN32
+#ifdef _WIN32
     /* Cancel possible IO in progress (shutdown does not do that on
     Windows). */
     (void) cancel_io((HANDLE)vio->mysql_socket, vio->thread_id);
