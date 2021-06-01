@@ -166,8 +166,26 @@ static uint group_count;
 static ulonglong pool_block_start;
 
 /* Global timer for all groups  */
-struct pool_timer_t
+class pool_timer_t
 {
+public:
+  inline uint64 get_current_microtime() {
+    return my_atomic_load64((volatile int64*)&current_microtime);
+  }
+
+  inline void set_current_microtime(uint64 val) {
+    my_atomic_store64((volatile int64*)&current_microtime, val);
+  }
+
+  inline uint64 get_next_timeout_check() {
+    return my_atomic_load64((volatile int64*)&next_timeout_check);
+  }
+
+  inline void set_next_timeout_check(uint64 val) {
+    my_atomic_store64((volatile int64*)&next_timeout_check, val);
+  }
+
+public:
   mysql_mutex_t mutex;
   mysql_cond_t cond;
   volatile uint64 current_microtime;
@@ -497,7 +515,7 @@ public:
       return;
     }
 
-    if(connection->abs_wait_timeout < m_timer->current_microtime)
+    if (connection->abs_wait_timeout < m_timer->get_current_microtime())
     {
       /* Wait timeout exceeded, kill connection. */
       mysql_mutex_lock(&thd->LOCK_thd_data);
@@ -557,8 +575,8 @@ static void* timer_thread(void *param)
 
   my_thread_init();
   DBUG_ENTER("timer_thread");
-  timer->next_timeout_check= ULLONG_MAX;
-  timer->current_microtime= my_microsecond_getsystime();
+  timer->set_next_timeout_check(ULLONG_MAX);
+  timer->set_current_microtime(my_microsecond_getsystime());
 
   for(;;)
   {
@@ -575,7 +593,7 @@ static void* timer_thread(void *param)
     }
     if (err == ETIMEDOUT)
     {
-      timer->current_microtime= my_microsecond_getsystime();
+      timer->set_current_microtime(my_microsecond_getsystime());
       
       /* Check stalls in thread groups */
       for(i=0; i< array_elements(all_groups);i++)
@@ -585,7 +603,7 @@ static void* timer_thread(void *param)
       }
       
       /* Check if any client exceeded wait_timeout */
-      if (timer->next_timeout_check <= timer->current_microtime)
+      if (timer->get_next_timeout_check() <= timer->get_current_microtime())
         timeout_check(timer);
     }
     mysql_mutex_unlock(&timer->mutex);
@@ -1456,9 +1474,9 @@ void tp_wait_end(THD *thd)
 static void set_next_timeout_check(ulonglong abstime)
 {
   DBUG_ENTER("set_next_timeout_check");
-  while(abstime < pool_timer.next_timeout_check)
+  while (abstime < pool_timer.get_next_timeout_check())
   {
-    longlong old= (longlong)pool_timer.next_timeout_check;
+    longlong old = (longlong)pool_timer.get_next_timeout_check();
     my_atomic_cas64((volatile int64*)&pool_timer.next_timeout_check,
           &old, abstime);
   }
@@ -1476,12 +1494,12 @@ static void set_wait_timeout(connection_t *c)
   /* 
     Calculate wait deadline for this connection.
     Instead of using my_microsecond_getsystime() which has a syscall 
-    overhead, use pool_timer.current_microtime and take 
+    overhead, use pool_timer.get_current_microtime() and take 
     into account that its value could be off by at most 
     one tick interval.
   */
 
-  c->abs_wait_timeout= pool_timer.current_microtime +
+  c->abs_wait_timeout= pool_timer.get_current_microtime() +
     1000LL*pool_timer.tick_interval +
     1000000LL*c->thd->get_wait_timeout();
 
