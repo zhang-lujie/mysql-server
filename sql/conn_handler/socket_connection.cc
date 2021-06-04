@@ -161,7 +161,8 @@ public:
     @param connect_socket set connect socket descriptor.
   */
   Channel_info_local_socket(MYSQL_SOCKET connect_socket)
-  : m_connect_sock(connect_socket)
+  : Channel_info(false, true),
+  m_connect_sock(connect_socket)
   { }
 
   virtual THD* create_thd()
@@ -213,8 +214,11 @@ public:
 
     @param connect_socket set connect socket descriptor.
   */
-  Channel_info_tcpip_socket(MYSQL_SOCKET connect_socket, bool on_extra_port)
-    : Channel_info(on_extra_port), m_connect_sock(connect_socket)
+  Channel_info_tcpip_socket(MYSQL_SOCKET connect_socket,
+                            bool is_extra_port_conn,
+                            bool is_local_conn = false)
+    : Channel_info(is_extra_port_conn, is_local_conn),
+    m_connect_sock(connect_socket)
   { }
 
   virtual THD* create_thd()

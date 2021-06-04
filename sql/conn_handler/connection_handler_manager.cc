@@ -301,6 +301,12 @@ bool Connection_handler_manager::unload_connection_handler()
 void
 Connection_handler_manager::process_new_connection(Channel_info* channel_info)
 {
+  channel_info->set_on_extra_port(
+    channel_info->is_extra_port_connection() ||
+    (channel_info->is_local_connection() &&
+      Connection_handler_manager::thread_handling == SCHEDULER_THREAD_POOL &&
+      mysqld_extra_port == 0));
+
   if (abort_loop
       || !check_and_incr_conn_count(channel_info->is_on_extra_port()))
   {
