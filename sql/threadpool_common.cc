@@ -36,6 +36,7 @@ uint threadpool_size;
 uint threadpool_stall_limit;
 uint threadpool_max_threads;
 uint threadpool_oversubscribe;
+uint threadpool_toobusy;
 
 /* Stats */
 TP_STATISTICS tp_stats;
