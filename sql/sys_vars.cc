@@ -4142,6 +4142,12 @@ static Sys_var_uint Sys_threadpool_oversubscribe(
   GLOBAL_VAR(threadpool_oversubscribe), CMD_LINE(REQUIRED_ARG),
   VALID_RANGE(1, 1000), DEFAULT(3), BLOCK_SIZE(1)
 );
+static Sys_var_uint Sys_threadpool_toobusy(
+  "thread_pool_toobusy",
+  "How many additional active and waiting worker threads in a group are allowed.",
+  GLOBAL_VAR(threadpool_toobusy), CMD_LINE(REQUIRED_ARG),
+  VALID_RANGE(1, 1000), DEFAULT(13), BLOCK_SIZE(1)
+);
 static Sys_var_uint Sys_threadpool_size(
  "thread_pool_size",
  "Number of thread groups in the pool. "
