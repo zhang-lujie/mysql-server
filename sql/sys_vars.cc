@@ -4127,7 +4127,8 @@ static inline int my_getncpus()
 #endif
 }
 
-#ifndef _WIN32
+#ifdef _WIN32
+#else
 static Sys_var_uint Sys_threadpool_idle_thread_timeout(
   "thread_pool_idle_timeout",
   "Timeout in seconds for an idle thread in the thread pool."
