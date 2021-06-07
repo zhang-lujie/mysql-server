@@ -54,6 +54,9 @@ extern void tp_wait_end(THD*);
 extern void tp_post_kill_notification(THD *thd);
 extern void tp_end(void);
 
+extern void tp_scheduler_event_begin(THD* thd);
+extern void tp_scheduler_event_end(THD* thd);
+
 extern THD_event_functions tp_event_functions;
 
 /* Used in SHOW for threadpool_idle_thread_count */

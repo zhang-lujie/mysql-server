@@ -143,6 +143,7 @@ struct thread_group_t
   pthread_attr_t *pthread_attr;
   int  pollfd;
   int  thread_count;
+  int  dump_thread_count;
   int  active_thread_count;
   int  connection_count;
   int  waiting_thread_count;
@@ -1002,9 +1003,16 @@ static int thread_group_init(thread_group_t *thread_group,
   DBUG_ENTER("thread_group_init");
   thread_group->pthread_attr = thread_attr;
   mysql_mutex_init(key_group_mutex, &thread_group->mutex, NULL);
-  thread_group->pollfd= -1;
-  thread_group->shutdown_pipe[0]= -1;
-  thread_group->shutdown_pipe[1]= -1;
+  thread_group->pollfd = -1;
+  thread_group->shutdown_pipe[0] = -1;
+  thread_group->shutdown_pipe[1] = -1;
+  thread_group->thread_count = 0;
+  thread_group->dump_thread_count = 0;
+  thread_group->connection_count = 0;
+  thread_group->waiting_thread_count = 0;
+  thread_group->io_event_count = 0;
+  thread_group->queue_event_count = 0;
+  thread_group->stalled = false;
   DBUG_RETURN(0);
 }
 
@@ -1754,6 +1762,52 @@ void tp_set_threadpool_stall_limit(uint limit)
   pool_timer.tick_interval= limit;
   mysql_mutex_unlock(&(pool_timer.mutex));
   mysql_cond_signal(&(pool_timer.cond));
+}
+
+void tp_scheduler_event_begin(THD* thd)
+{
+  DBUG_ENTER("tp_scheduler_event_begin");
+  connection_t *connection = (connection_t *)thd->event_scheduler.data;
+
+  if (thd == NULL || connection == NULL) {
+    DBUG_VOID_RETURN;
+  }
+
+  if (thd->get_command() == COM_BINLOG_DUMP_GTID ||
+      thd->get_command() == COM_BINLOG_DUMP) {
+    thread_group_t *group = connection->thread_group;
+    mysql_mutex_lock(&group->mutex);
+    group->dump_thread_count++;
+    group->active_thread_count--;
+    DBUG_ASSERT(group->dump_thread_count > 0);
+    DBUG_ASSERT(group->active_thread_count >= 0);
+    mysql_mutex_unlock(&group->mutex);
+  }
+  
+  DBUG_VOID_RETURN;
+}
+
+void tp_scheduler_event_end(THD* thd)
+{
+  DBUG_ENTER("tp_scheduler_event_end");
+  connection_t *connection = (connection_t *)thd->event_scheduler.data;
+
+  if (thd == NULL || connection == NULL) {
+    DBUG_VOID_RETURN;
+  }
+
+  if (thd->get_command() == COM_BINLOG_DUMP_GTID ||
+      thd->get_command() == COM_BINLOG_DUMP) {
+      thread_group_t *group = connection->thread_group;
+      mysql_mutex_lock(&group->mutex);
+      group->dump_thread_count--;
+      group->active_thread_count++;
+      DBUG_ASSERT(group->dump_thread_count >= 0);
+      DBUG_ASSERT(group->active_thread_count > 0);
+      mysql_mutex_unlock(&group->mutex);
+  }
+
+  DBUG_VOID_RETURN;
 }
 
 
