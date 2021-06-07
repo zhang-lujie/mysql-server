@@ -52,13 +52,15 @@ uint Connection_handler_manager::max_threads= 0;
 static void scheduler_wait_lock_begin()
 {
   THD* thd= current_thd;
-  MYSQL_CALLBACK(thd->scheduler, thd_wait_begin, (thd, THD_WAIT_TABLE_LOCK));
+  if (likely(thd))
+    MYSQL_CALLBACK(thd->scheduler, thd_wait_begin, (thd, THD_WAIT_TABLE_LOCK));
 }
 
 static void scheduler_wait_lock_end()
 {
   THD* thd= current_thd;
-  MYSQL_CALLBACK(thd->scheduler, thd_wait_end, (thd));
+  if (likely(thd))
+    MYSQL_CALLBACK(thd->scheduler, thd_wait_end, (thd));
 }
 
 static void scheduler_wait_sync_begin()
