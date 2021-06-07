@@ -17,7 +17,7 @@
 
 #include "conn_handler/connection_handler_manager.h"
 
-#define MAX_THREAD_GROUPS 128
+#define MAX_THREAD_GROUPS 1024
 
 enum tp_high_prio_mode_t {
   TP_HIGH_PRIO_MODE_TRANSACTIONS,
