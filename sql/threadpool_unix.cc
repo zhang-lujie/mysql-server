@@ -439,7 +439,7 @@ inline bool too_many_active_threads(thread_group_t *thread_group)
 inline bool too_many_busy_threads(thread_group_t *thread_group)
 {
   return (thread_group->active_thread_count + thread_group->waiting_thread_count
-          > 1 + (int) threadpool_oversubscribe);
+          > 1 + (int) threadpool_toobusy);
 }
 
 /*
