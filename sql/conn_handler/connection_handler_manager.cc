@@ -96,15 +96,10 @@ bool Connection_handler_manager::valid_connection_count(
 {
   bool connection_accepted= true;
   mysql_mutex_lock(&LOCK_connection_count);
-  if (extra_port_connection)
-  {
-    if (extra_connection_count > extra_max_connections)
-    {
-      connection_accepted= false;
-      m_connection_errors_max_connection++;
-    }
-  }
-  else if (connection_count > max_connections)
+  if ((extra_port_connection &&
+        extra_connection_count > extra_max_connections) ||
+      (!extra_port_connection &&
+        connection_count > max_connections))
   {
     connection_accepted= false;
     m_connection_errors_max_connection++;
