@@ -36,6 +36,8 @@
 for stall detection to kick in */
 #define THREADPOOL_CREATE_THREADS_ON_WAIT
 
+#define TP_GROUP_WAIT_FOR_CLOSE 10000
+
 /* Possible values for thread_pool_high_prio_mode */
 const char *threadpool_high_prio_mode_names[]= {"transactions", "statements",
                                                  "none", NullS};
@@ -969,11 +971,13 @@ static int thread_group_init(thread_group_t *thread_group,
   thread_group->shutdown_pipe[0] = -1;
   thread_group->shutdown_pipe[1] = -1;
   thread_group->thread_count = 0;
+  thread_group->active_thread_count = 0;
   thread_group->dump_thread_count = 0;
   thread_group->connection_count = 0;
   thread_group->waiting_thread_count = 0;
   thread_group->io_event_count = 0;
   thread_group->queue_event_count = 0;
+  thread_group->shutdown = false;
   thread_group->stalled = false;
   DBUG_RETURN(0);
 }
@@ -1021,11 +1025,7 @@ static int wake_thread(thread_group_t *thread_group,bool due_to_stall)
 
 
 /**
-  Initiate shutdown for thread group.
-
-  The shutdown is asynchronous, we only care to  wake all threads in here, so 
-  they can finish. We do not wait here until threads terminate. Final cleanup 
-  of the group (thread_group_destroy) will be done by the last exiting threads.
+  Shutdown for thread group.
 */
 
 static void thread_group_close(thread_group_t *thread_group)
@@ -1036,12 +1036,10 @@ static void thread_group_close(thread_group_t *thread_group)
   if (thread_group->thread_count == 0) 
   {
     mysql_mutex_unlock(&thread_group->mutex);
-    thread_group_destroy(thread_group);
     DBUG_VOID_RETURN;
   }
 
   thread_group->shutdown= true; 
-  thread_group->listener= NULL;
 
   if (pipe(thread_group->shutdown_pipe))
   {
@@ -1062,6 +1060,8 @@ static void thread_group_close(thread_group_t *thread_group)
     mysql_mutex_unlock(&thread_group->mutex);
     DBUG_VOID_RETURN;
   }
+
+  thread_group->listener= NULL;
 
   /* Wake all workers. */
   while(wake_thread(thread_group, false) == 0) 
@@ -1636,15 +1636,9 @@ static void *worker_main(void *param)
   /* Thread shutdown: cleanup per-worker-thread structure. */
   mysql_cond_destroy(&this_thread.cond);
 
-  bool last_thread;                    /* last thread in group exits */
   mysql_mutex_lock(&thread_group->mutex);
   add_thread_count(thread_group, -1);
-  last_thread= ((thread_group->thread_count == 0) && thread_group->shutdown);
   mysql_mutex_unlock(&thread_group->mutex);
-
-  /* Last thread in group exits and pool is terminating, destroy group.*/
-  if (last_thread)
-    thread_group_destroy(thread_group);
 
   my_thread_end();
   return NULL;
@@ -1687,10 +1681,33 @@ void tp_end()
     DBUG_VOID_RETURN;
 
   stop_timer(&pool_timer);
-  for(uint i=0; i< array_elements(all_groups); i++)
+  uint all_groups_size = array_elements(all_groups);
+  for(uint i=0; i< all_groups_size; i++)
   {
     thread_group_close(&all_groups[i]);
   }
+
+  thread_group_t *thread_group = NULL;
+  for(uint i=0; i< all_groups_size; i++)
+  {
+    thread_group = &all_groups[i];
+    mysql_mutex_lock(&thread_group->mutex);
+    if (thread_group->listener != NULL)
+    {
+      mysql_mutex_unlock(&thread_group->mutex);
+      continue;
+    }
+    while (thread_group->thread_count > 0)
+    {
+      mysql_mutex_unlock(&thread_group->mutex);
+      my_sleep(TP_GROUP_WAIT_FOR_CLOSE);
+      mysql_mutex_lock(&thread_group->mutex);
+    }
+    mysql_mutex_unlock(&thread_group->mutex);
+
+    thread_group_destroy(thread_group);
+  }
+
   threadpool_started= false;
   DBUG_VOID_RETURN;
 }
