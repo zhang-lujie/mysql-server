@@ -1650,6 +1650,12 @@ bool tp_init()
   DBUG_ENTER("tp_init");
   threadpool_started= true;
 
+#ifdef HAVE_PSI_INTERFACE
+  PSI_register(mutex);
+  PSI_register(cond);
+  PSI_register(thread);
+#endif
+
   for(uint i=0; i < array_elements(all_groups); i++)
   {
     thread_group_init(&all_groups[i], get_connection_attrib());  
@@ -1661,11 +1667,6 @@ bool tp_init()
     sql_print_error("Can't set threadpool size to %d",threadpool_size);
     DBUG_RETURN(1);
   }
-#ifdef HAVE_PSI_INTERFACE
-  PSI_register(mutex);
-  PSI_register(cond);
-  PSI_register(thread);
-#endif
   
   pool_timer.tick_interval= threadpool_stall_limit;
   start_timer(&pool_timer);
