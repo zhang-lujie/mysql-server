@@ -510,9 +510,6 @@ static void timeout_check(pool_timer_t *timer)
  
   Besides checking for stalls, timer thread is also responsible for terminating
   clients that have been idle for longer than wait_timeout seconds.
-
-  TODO: Let the timer sleep for long time if there is no work to be done.
-  Currently it wakes up rather often on and idle server.
 */
 
 static void* timer_thread(void *param)
@@ -895,8 +892,6 @@ end:
  
  The actual values were not calculated using any scientific methods.
  They just look right, and behave well in practice.
- 
- TODO: Should throttling depend on thread_pool_stall_limit?
 */
 static ulonglong microsecond_throttling_interval(thread_group_t *thread_group)
 {
@@ -1758,9 +1753,9 @@ void tp_set_threadpool_stall_limit(uint limit)
 void tp_scheduler_event_begin(THD* thd)
 {
   DBUG_ENTER("tp_scheduler_event_begin");
-  connection_t *connection = (connection_t *)thd->event_scheduler.data;
+  connection_t *connection = NULL;
 
-  if (thd == NULL || connection == NULL) {
+  if (thd == NULL || (connection = (connection_t *)thd->event_scheduler.data) == NULL) {
     DBUG_VOID_RETURN;
   }
 
@@ -1781,9 +1776,9 @@ void tp_scheduler_event_begin(THD* thd)
 void tp_scheduler_event_end(THD* thd)
 {
   DBUG_ENTER("tp_scheduler_event_end");
-  connection_t *connection = (connection_t *)thd->event_scheduler.data;
+  connection_t *connection = NULL;
 
-  if (thd == NULL || connection == NULL) {
+  if (thd == NULL || (connection = (connection_t *)thd->event_scheduler.data) == NULL) {
     DBUG_VOID_RETURN;
   }
 
