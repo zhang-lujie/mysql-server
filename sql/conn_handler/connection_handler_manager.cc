@@ -191,11 +191,19 @@ bool Connection_handler_manager::init()
     DBUG_ASSERT(false);
   }
 
+  if (connection_handler == NULL)
+  {
+    // This is a static member function.
+    Per_thread_connection_handler::destroy();
+    return true;
+  }
+
   Connection_handler *extra_connection_handler=
     new (std::nothrow) Per_thread_connection_handler();
 
-  if (connection_handler == NULL || extra_connection_handler == NULL)
+  if (extra_connection_handler == NULL)
   {
+    delete connection_handler;
     // This is a static member function.
     Per_thread_connection_handler::destroy();
     return true;
@@ -207,6 +215,7 @@ bool Connection_handler_manager::init()
   if (m_instance == NULL)
   {
     delete connection_handler;
+    delete extra_connection_handler;
     // This is a static member function.
     Per_thread_connection_handler::destroy();
     return true;
